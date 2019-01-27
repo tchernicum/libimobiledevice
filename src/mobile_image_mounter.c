@@ -8,15 +8,15 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <string.h>
@@ -40,7 +40,7 @@ static void mobile_image_mounter_lock(mobile_image_mounter_client_t client)
 
 /**
  * Unlocks a mobile_image_mounter client, used for thread safety.
- * 
+ *
  * @param client mobile_image_mounter client to unlock
  */
 static void mobile_image_mounter_unlock(mobile_image_mounter_client_t client)
@@ -75,7 +75,7 @@ static mobile_image_mounter_error_t mobile_image_mounter_error(property_list_ser
 	return MOBILE_IMAGE_MOUNTER_E_UNKNOWN_ERROR;
 }
 
-mobile_image_mounter_error_t mobile_image_mounter_new(idevice_t device, lockdownd_service_descriptor_t service, mobile_image_mounter_client_t *client)
+LIBIMOBILEDEVICE_API mobile_image_mounter_error_t mobile_image_mounter_new(idevice_t device, lockdownd_service_descriptor_t service, mobile_image_mounter_client_t *client)
 {
 	property_list_service_client_t plistclient = NULL;
 	mobile_image_mounter_error_t err = mobile_image_mounter_error(property_list_service_client_new(device, service, &plistclient));
@@ -92,14 +92,14 @@ mobile_image_mounter_error_t mobile_image_mounter_new(idevice_t device, lockdown
 	return MOBILE_IMAGE_MOUNTER_E_SUCCESS;
 }
 
-mobile_image_mounter_error_t mobile_image_mounter_start_service(idevice_t device, mobile_image_mounter_client_t * client, const char* label)
+LIBIMOBILEDEVICE_API mobile_image_mounter_error_t mobile_image_mounter_start_service(idevice_t device, mobile_image_mounter_client_t * client, const char* label)
 {
 	mobile_image_mounter_error_t err = MOBILE_IMAGE_MOUNTER_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, MOBILE_IMAGE_MOUNTER_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(mobile_image_mounter_new), &err);
 	return err;
 }
 
-mobile_image_mounter_error_t mobile_image_mounter_free(mobile_image_mounter_client_t client)
+LIBIMOBILEDEVICE_API mobile_image_mounter_error_t mobile_image_mounter_free(mobile_image_mounter_client_t client)
 {
 	if (!client)
 		return MOBILE_IMAGE_MOUNTER_E_INVALID_ARG;
@@ -112,7 +112,7 @@ mobile_image_mounter_error_t mobile_image_mounter_free(mobile_image_mounter_clie
 	return MOBILE_IMAGE_MOUNTER_E_SUCCESS;
 }
 
-mobile_image_mounter_error_t mobile_image_mounter_lookup_image(mobile_image_mounter_client_t client, const char *image_type, plist_t *result)
+LIBIMOBILEDEVICE_API mobile_image_mounter_error_t mobile_image_mounter_lookup_image(mobile_image_mounter_client_t client, const char *image_type, plist_t *result)
 {
 	if (!client || !image_type || !result) {
 		return MOBILE_IMAGE_MOUNTER_E_INVALID_ARG;
@@ -141,7 +141,7 @@ leave_unlock:
 	return res;
 }
 
-mobile_image_mounter_error_t mobile_image_mounter_upload_image(mobile_image_mounter_client_t client, const char *image_type, size_t image_size, const char *signature, uint16_t signature_size, mobile_image_mounter_upload_cb_t upload_cb, void* userdata)
+LIBIMOBILEDEVICE_API mobile_image_mounter_error_t mobile_image_mounter_upload_image(mobile_image_mounter_client_t client, const char *image_type, size_t image_size, const char *signature, uint16_t signature_size, mobile_image_mounter_upload_cb_t upload_cb, void* userdata)
 {
 	if (!client || !image_type || (image_size == 0) || !upload_cb) {
 		return MOBILE_IMAGE_MOUNTER_E_INVALID_ARG;
@@ -231,7 +231,7 @@ mobile_image_mounter_error_t mobile_image_mounter_upload_image(mobile_image_moun
 		plist_get_string_val(node, &strval);
 	}
 	if (!strval) {
-		debug_info("Error: Unexpected response received!");	
+		debug_info("Error: Unexpected response received!");
 		goto leave_unlock;
 	}
 	if (strcmp(strval, "Complete") != 0) {
@@ -242,7 +242,7 @@ mobile_image_mounter_error_t mobile_image_mounter_upload_image(mobile_image_moun
 		res = MOBILE_IMAGE_MOUNTER_E_SUCCESS;
 	}
 	free(strval);
-	
+
 
 leave_unlock:
 	mobile_image_mounter_unlock(client);
@@ -252,7 +252,7 @@ leave_unlock:
 
 }
 
-mobile_image_mounter_error_t mobile_image_mounter_mount_image(mobile_image_mounter_client_t client, const char *image_path, const char *signature, uint16_t signature_size, const char *image_type, plist_t *result)
+LIBIMOBILEDEVICE_API mobile_image_mounter_error_t mobile_image_mounter_mount_image(mobile_image_mounter_client_t client, const char *image_path, const char *signature, uint16_t signature_size, const char *image_type, plist_t *result)
 {
 	if (!client || !image_path || !image_type || !result) {
 		return MOBILE_IMAGE_MOUNTER_E_INVALID_ARG;
@@ -284,7 +284,7 @@ leave_unlock:
 	return res;
 }
 
-mobile_image_mounter_error_t mobile_image_mounter_hangup(mobile_image_mounter_client_t client)
+LIBIMOBILEDEVICE_API mobile_image_mounter_error_t mobile_image_mounter_hangup(mobile_image_mounter_client_t client)
 {
 	if (!client) {
 		return MOBILE_IMAGE_MOUNTER_E_INVALID_ARG;

@@ -2,8 +2,8 @@
  * lockdown.c
  * com.apple.mobile.lockdownd service implementation.
  *
- * Copyright (c) 2014 Martin Szulecki All Rights Reserved.
- * Copyright (c) 2014 Nikias Bassen. All Rights Reserved.
+ * Copyright (c) 2009-2015 Martin Szulecki All Rights Reserved.
+ * Copyright (c) 2014-2015 Nikias Bassen All Rights Reserved.
  * Copyright (c) 2010 Bryan Forbes All Rights Reserved.
  * Copyright (c) 2008 Zach C. All Rights Reserved.
  *
@@ -57,8 +57,113 @@
 #define sleep(x) Sleep(x*1000)
 #endif
 
-#define RESULT_SUCCESS 0
-#define RESULT_FAILURE 1
+/**
+ * Convert an error string identifier to a lockdownd_error_t value.
+ * Used internally to get correct error codes from a response.
+ *
+ * @param name The error name to convert.
+ *
+ * @return A matching lockdownd_error_t error code,
+ *     LOCKDOWN_E_UNKNOWN_ERROR otherwise.
+ */
+static lockdownd_error_t lockdownd_strtoerr(const char* name)
+{
+	lockdownd_error_t err = LOCKDOWN_E_UNKNOWN_ERROR;
+
+	if (strcmp(name, "InvalidResponse") == 0) {
+		err = LOCKDOWN_E_INVALID_RESPONSE;
+	} else if (strcmp(name, "MissingKey") == 0) {
+		err = LOCKDOWN_E_MISSING_KEY;
+	} else if (strcmp(name, "MissingValue") == 0) {
+		err = LOCKDOWN_E_MISSING_VALUE;
+	} else if (strcmp(name, "GetProhibited") == 0) {
+		err = LOCKDOWN_E_GET_PROHIBITED;
+	} else if (strcmp(name, "SetProhibited") == 0) {
+		err = LOCKDOWN_E_SET_PROHIBITED;
+	} else if (strcmp(name, "RemoveProhibited") == 0) {
+		err = LOCKDOWN_E_REMOVE_PROHIBITED;
+	} else if (strcmp(name, "ImmutableValue") == 0) {
+		err = LOCKDOWN_E_IMMUTABLE_VALUE;
+	} else if (strcmp(name, "PasswordProtected") == 0) {
+		err = LOCKDOWN_E_PASSWORD_PROTECTED;
+	} else if (strcmp(name, "UserDeniedPairing") == 0) {
+		err = LOCKDOWN_E_USER_DENIED_PAIRING;
+	} else if (strcmp(name, "PairingDialogResponsePending") == 0) {
+		err = LOCKDOWN_E_PAIRING_DIALOG_RESPONSE_PENDING;
+	} else if (strcmp(name, "MissingHostID") == 0) {
+		err = LOCKDOWN_E_MISSING_HOST_ID;
+	} else if (strcmp(name, "InvalidHostID") == 0) {
+		err = LOCKDOWN_E_INVALID_HOST_ID;
+	} else if (strcmp(name, "SessionActive") == 0) {
+		err = LOCKDOWN_E_SESSION_ACTIVE;
+	} else if (strcmp(name, "SessionInactive") == 0) {
+		err = LOCKDOWN_E_SESSION_INACTIVE;
+	} else if (strcmp(name, "MissingSessionID") == 0) {
+		err = LOCKDOWN_E_MISSING_SESSION_ID;
+	} else if (strcmp(name, "InvalidSessionID") == 0) {
+		err = LOCKDOWN_E_INVALID_SESSION_ID;
+	} else if (strcmp(name, "MissingService") == 0) {
+		err = LOCKDOWN_E_MISSING_SERVICE;
+	} else if (strcmp(name, "InvalidService") == 0) {
+		err = LOCKDOWN_E_INVALID_SERVICE;
+	} else if (strcmp(name, "ServiceLimit") == 0) {
+		err = LOCKDOWN_E_SERVICE_LIMIT;
+	} else if (strcmp(name, "MissingPairRecord") == 0) {
+		err = LOCKDOWN_E_MISSING_PAIR_RECORD;
+	} else if (strcmp(name, "SavePairRecordFailed") == 0) {
+		err = LOCKDOWN_E_SAVE_PAIR_RECORD_FAILED;
+	} else if (strcmp(name, "InvalidPairRecord") == 0) {
+		err = LOCKDOWN_E_INVALID_PAIR_RECORD;
+	} else if (strcmp(name, "InvalidActivationRecord") == 0) {
+		err = LOCKDOWN_E_INVALID_ACTIVATION_RECORD;
+	} else if (strcmp(name, "MissingActivationRecord") == 0) {
+		err = LOCKDOWN_E_MISSING_ACTIVATION_RECORD;
+	} else if (strcmp(name, "ServiceProhibited") == 0) {
+		err = LOCKDOWN_E_SERVICE_PROHIBITED;
+	} else if (strcmp(name, "EscrowLocked") == 0) {
+		err = LOCKDOWN_E_ESCROW_LOCKED;
+	} else if (strcmp(name, "PairingProhibitedOverThisConnection") == 0) {
+		err = LOCKDOWN_E_PAIRING_PROHIBITED_OVER_THIS_CONNECTION;
+	} else if (strcmp(name, "FMiPProtected") == 0) {
+		err = LOCKDOWN_E_FMIP_PROTECTED;
+	} else if (strcmp(name, "MCProtected") == 0) {
+		err = LOCKDOWN_E_MC_PROTECTED;
+	} else if (strcmp(name, "MCChallengeRequired") == 0) {
+		err = LOCKDOWN_E_MC_CHALLENGE_REQUIRED;
+	}
+
+	return err;
+}
+
+/**
+ * Convert a property_list_service_error_t value to a lockdownd_error_t
+ * value. Used internally to get correct error codes.
+ *
+ * @param err A property_list_service_error_t error code
+ *
+ * @return A matching lockdownd_error_t error code,
+ *     LOCKDOWND_E_UNKNOWN_ERROR otherwise.
+ */
+static lockdownd_error_t lockdownd_error(property_list_service_error_t err)
+{
+	switch (err) {
+		case PROPERTY_LIST_SERVICE_E_SUCCESS:
+			return LOCKDOWN_E_SUCCESS;
+		case PROPERTY_LIST_SERVICE_E_INVALID_ARG:
+			return LOCKDOWN_E_INVALID_ARG;
+		case PROPERTY_LIST_SERVICE_E_PLIST_ERROR:
+			return LOCKDOWN_E_PLIST_ERROR;
+		case PROPERTY_LIST_SERVICE_E_MUX_ERROR:
+			return LOCKDOWN_E_MUX_ERROR;
+		case PROPERTY_LIST_SERVICE_E_SSL_ERROR:
+			return LOCKDOWN_E_SSL_ERROR;
+		case PROPERTY_LIST_SERVICE_E_RECEIVE_TIMEOUT:
+			return LOCKDOWN_E_RECEIVE_TIMEOUT;
+		default:
+			break;
+	}
+	return LOCKDOWN_E_UNKNOWN_ERROR;
+}
 
 /**
  * Internally used function for checking the result from lockdown's answer
@@ -68,30 +173,34 @@
  * @param query_match Name of the request to match or NULL if no match is
  *        required.
  *
- * @return RESULT_SUCCESS when the result is 'Success',
- *         RESULT_FAILURE when the result is 'Failure',
- *         or a negative value if an error occured during evaluation.
+ * @return LOCKDOWN_E_SUCCESS when the result is 'Success',
+ *         LOCKDOWN_E_UNKNOWN_ERROR when the result is 'Failure',
+ *         or a specific error code if derieved from the result.
  */
-static int lockdown_check_result(plist_t dict, const char *query_match)
+static lockdownd_error_t lockdown_check_result(plist_t dict, const char *query_match)
 {
-	int ret = -1;
+	lockdownd_error_t ret = LOCKDOWN_E_UNKNOWN_ERROR;
 
 	plist_t query_node = plist_dict_get_item(dict, "Request");
 	if (!query_node) {
 		return ret;
 	}
+
 	if (plist_get_node_type(query_node) != PLIST_STRING) {
 		return ret;
 	} else {
 		char *query_value = NULL;
+
 		plist_get_string_val(query_node, &query_value);
 		if (!query_value) {
 			return ret;
 		}
+
 		if (query_match && (strcmp(query_value, query_match) != 0)) {
 			free(query_value);
 			return ret;
 		}
+
 		free(query_value);
 	}
 
@@ -103,39 +212,43 @@ static int lockdown_check_result(plist_t dict, const char *query_match)
 		if (err_node) {
 			if (plist_get_node_type(err_node) == PLIST_STRING) {
 				char *err_value = NULL;
+
 				plist_get_string_val(err_node, &err_value);
 				if (err_value) {
 					debug_info("ERROR: %s", err_value);
+					ret = lockdownd_strtoerr(err_value);
 					free(err_value);
 				} else {
 					debug_info("ERROR: unknown error occured");
 				}
 			}
-			return RESULT_FAILURE;
+			return ret;
 		}
-		return RESULT_SUCCESS;
+
+		ret = LOCKDOWN_E_SUCCESS;
+
+		return ret;
 	}
 
 	plist_type result_type = plist_get_node_type(result_node);
-
 	if (result_type == PLIST_STRING) {
-
 		char *result_value = NULL;
 
 		plist_get_string_val(result_node, &result_value);
-
 		if (result_value) {
 			if (!strcmp(result_value, "Success")) {
-				ret = RESULT_SUCCESS;
+				ret = LOCKDOWN_E_SUCCESS;
 			} else if (!strcmp(result_value, "Failure")) {
-				ret = RESULT_FAILURE;
+				ret = LOCKDOWN_E_UNKNOWN_ERROR;
 			} else {
 				debug_info("ERROR: unknown result value '%s'", result_value);
 			}
 		}
+
 		if (result_value)
 			free(result_value);
 	}
+
 	return ret;
 }
 
@@ -154,7 +267,7 @@ static void plist_dict_add_label(plist_t plist, const char *label)
 	}
 }
 
-lockdownd_error_t lockdownd_stop_session(lockdownd_client_t client, const char *session_id)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_stop_session(lockdownd_client_t client, const char *session_id)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -185,10 +298,9 @@ lockdownd_error_t lockdownd_stop_session(lockdownd_client_t client, const char *
 		return LOCKDOWN_E_PLIST_ERROR;
 	}
 
-	ret = LOCKDOWN_E_UNKNOWN_ERROR;
-	if (lockdown_check_result(dict, "StopSession") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "StopSession");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
 	}
 
 	plist_free(dict);
@@ -237,7 +349,7 @@ static lockdownd_error_t lockdownd_client_free_simple(lockdownd_client_t client)
 	return ret;
 }
 
-lockdownd_error_t lockdownd_client_free(lockdownd_client_t client)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_client_free(lockdownd_client_t client)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -253,7 +365,7 @@ lockdownd_error_t lockdownd_client_free(lockdownd_client_t client)
 	return ret;
 }
 
-void lockdownd_client_set_label(lockdownd_client_t client, const char *label)
+LIBIMOBILEDEVICE_API void lockdownd_client_set_label(lockdownd_client_t client, const char *label)
 {
 	if (client) {
 		if (client->label)
@@ -263,40 +375,23 @@ void lockdownd_client_set_label(lockdownd_client_t client, const char *label)
 	}
 }
 
-lockdownd_error_t lockdownd_receive(lockdownd_client_t client, plist_t *plist)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_receive(lockdownd_client_t client, plist_t *plist)
 {
 	if (!client || !plist || (plist && *plist))
 		return LOCKDOWN_E_INVALID_ARG;
-	lockdownd_error_t ret = LOCKDOWN_E_SUCCESS;
-	property_list_service_error_t err;
 
-	err = property_list_service_receive_plist(client->parent, plist);
-	if (err != PROPERTY_LIST_SERVICE_E_SUCCESS) {
-		ret = LOCKDOWN_E_UNKNOWN_ERROR;
-	}
-
-	if (!*plist)
-		ret = LOCKDOWN_E_PLIST_ERROR;
-
-	return ret;
+	return lockdownd_error(property_list_service_receive_plist(client->parent, plist));
 }
 
-lockdownd_error_t lockdownd_send(lockdownd_client_t client, plist_t plist)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_send(lockdownd_client_t client, plist_t plist)
 {
 	if (!client || !plist)
 		return LOCKDOWN_E_INVALID_ARG;
 
-	lockdownd_error_t ret = LOCKDOWN_E_SUCCESS;
-	idevice_error_t err;
-
-	err = property_list_service_send_xml_plist(client->parent, plist);
-	if (err != PROPERTY_LIST_SERVICE_E_SUCCESS) {
-		ret = LOCKDOWN_E_UNKNOWN_ERROR;
-	}
-	return ret;
+	return lockdownd_error(property_list_service_send_xml_plist(client->parent, plist));
 }
 
-lockdownd_error_t lockdownd_query_type(lockdownd_client_t client, char **type)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_query_type(lockdownd_client_t client, char **type)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -341,7 +436,7 @@ lockdownd_error_t lockdownd_query_type(lockdownd_client_t client, char **type)
 	return ret;
 }
 
-lockdownd_error_t lockdownd_get_value(lockdownd_client_t client, const char *domain, const char *key, plist_t *value)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_get_value(lockdownd_client_t client, const char *domain, const char *key, plist_t *value)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -374,12 +469,11 @@ lockdownd_error_t lockdownd_get_value(lockdownd_client_t client, const char *dom
 	if (ret != LOCKDOWN_E_SUCCESS)
 		return ret;
 
-	if (lockdown_check_result(dict, "GetValue") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "GetValue");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
-	} else {
-		ret = LOCKDOWN_E_UNKNOWN_ERROR;
 	}
+
 	if (ret != LOCKDOWN_E_SUCCESS) {
 		plist_free(dict);
 		return ret;
@@ -396,7 +490,7 @@ lockdownd_error_t lockdownd_get_value(lockdownd_client_t client, const char *dom
 	return ret;
 }
 
-lockdownd_error_t lockdownd_set_value(lockdownd_client_t client, const char *domain, const char *key, plist_t value)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_set_value(lockdownd_client_t client, const char *domain, const char *key, plist_t value)
 {
 	if (!client || !value)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -430,9 +524,9 @@ lockdownd_error_t lockdownd_set_value(lockdownd_client_t client, const char *dom
 	if (ret != LOCKDOWN_E_SUCCESS)
 		return ret;
 
-	if (lockdown_check_result(dict, "SetValue") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "SetValue");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
 	}
 
 	if (ret != LOCKDOWN_E_SUCCESS) {
@@ -444,7 +538,7 @@ lockdownd_error_t lockdownd_set_value(lockdownd_client_t client, const char *dom
 	return ret;
 }
 
-lockdownd_error_t lockdownd_remove_value(lockdownd_client_t client, const char *domain, const char *key)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_remove_value(lockdownd_client_t client, const char *domain, const char *key)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -477,9 +571,9 @@ lockdownd_error_t lockdownd_remove_value(lockdownd_client_t client, const char *
 	if (ret != LOCKDOWN_E_SUCCESS)
 		return ret;
 
-	if (lockdown_check_result(dict, "RemoveValue") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "RemoveValue");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
 	}
 
 	if (ret != LOCKDOWN_E_SUCCESS) {
@@ -491,7 +585,7 @@ lockdownd_error_t lockdownd_remove_value(lockdownd_client_t client, const char *
 	return ret;
 }
 
-lockdownd_error_t lockdownd_get_device_udid(lockdownd_client_t client, char **udid)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_get_device_udid(lockdownd_client_t client, char **udid)
 {
 	lockdownd_error_t ret = LOCKDOWN_E_UNKNOWN_ERROR;
 	plist_t value = NULL;
@@ -537,7 +631,7 @@ static lockdownd_error_t lockdownd_get_device_public_key_as_key_data(lockdownd_c
 	return ret;
 }
 
-lockdownd_error_t lockdownd_get_device_name(lockdownd_client_t client, char **device_name)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_get_device_name(lockdownd_client_t client, char **device_name)
 {
 	lockdownd_error_t ret = LOCKDOWN_E_UNKNOWN_ERROR;
 	plist_t value = NULL;
@@ -554,9 +648,9 @@ lockdownd_error_t lockdownd_get_device_name(lockdownd_client_t client, char **de
 	return ret;
 }
 
-lockdownd_error_t lockdownd_client_new(idevice_t device, lockdownd_client_t *client, const char *label)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_client_new(idevice_t device, lockdownd_client_t *client, const char *label)
 {
-	if (!client)
+	if (!device || !client)
 		return LOCKDOWN_E_INVALID_ARG;
 
 	static struct lockdownd_service_descriptor service = {
@@ -574,6 +668,7 @@ lockdownd_error_t lockdownd_client_new(idevice_t device, lockdownd_client_t *cli
 	client_loc->parent = plistclient;
 	client_loc->ssl_enabled = 0;
 	client_loc->session_id = NULL;
+	client_loc->mux_id = device->mux_id;
 
 	if (idevice_get_udid(device, &client_loc->udid) != IDEVICE_E_SUCCESS) {
 		debug_info("failed to get device udid.");
@@ -587,13 +682,14 @@ lockdownd_error_t lockdownd_client_new(idevice_t device, lockdownd_client_t *cli
 	return LOCKDOWN_E_SUCCESS;
 }
 
-lockdownd_error_t lockdownd_client_new_with_handshake(idevice_t device, lockdownd_client_t *client, const char *label)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_client_new_with_handshake(idevice_t device, lockdownd_client_t *client, const char *label)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
 
 	lockdownd_error_t ret = LOCKDOWN_E_SUCCESS;
 	lockdownd_client_t client_loc = NULL;
+	plist_t pair_record = NULL;
 	char *host_id = NULL;
 	char *type = NULL;
 
@@ -604,18 +700,28 @@ lockdownd_error_t lockdownd_client_new_with_handshake(idevice_t device, lockdown
 	}
 
 	/* perform handshake */
-	if (LOCKDOWN_E_SUCCESS != lockdownd_query_type(client_loc, &type)) {
+	ret = lockdownd_query_type(client_loc, &type);
+	if (LOCKDOWN_E_SUCCESS != ret) {
 		debug_info("QueryType failed in the lockdownd client.");
-		ret = LOCKDOWN_E_NOT_ENOUGH_DATA;
-	} else {
-		if (strcmp("com.apple.mobile.lockdown", type)) {
-			debug_info("Warning QueryType request returned \"%s\".", type);
-		}
+	} else if (strcmp("com.apple.mobile.lockdown", type)) {
+		debug_info("Warning QueryType request returned \"%s\".", type);
 	}
-	if (type)
-		free(type);
+	free(type);
 
-	plist_t pair_record = NULL;
+	if (device->version == 0) {
+		plist_t p_version = NULL;
+		if (lockdownd_get_value(client_loc, NULL, "ProductVersion", &p_version) == LOCKDOWN_E_SUCCESS) {
+			int vers[3] = {0, 0, 0};
+			char *s_version = NULL;
+			plist_get_string_val(p_version, &s_version);
+			if (s_version && sscanf(s_version, "%d.%d.%d", &vers[0], &vers[1], &vers[2]) >= 2) {
+				device->version = ((vers[0] & 0xFF) << 16) | ((vers[1] & 0xFF) << 8) | (vers[2] & 0xFF);
+			}
+			free(s_version);
+		}
+		plist_free(p_version);
+	}
+
 	userpref_read_pair_record(client_loc->udid, &pair_record);
 	if (pair_record) {
 		pair_record_get_host_id(pair_record, &host_id);
@@ -632,17 +738,18 @@ lockdownd_error_t lockdownd_client_new_with_handshake(idevice_t device, lockdown
 	plist_free(pair_record);
 	pair_record = NULL;
 
-	/* in any case, we need to validate pairing to receive trusted host status */
-	ret = lockdownd_validate_pair(client_loc, NULL);
+	if (device->version < 0x070000) {
+		/* for older devices, we need to validate pairing to receive trusted host status */
+		ret = lockdownd_validate_pair(client_loc, NULL);
 
-	/* if not paired yet, let's do it now */
-	if (LOCKDOWN_E_INVALID_HOST_ID == ret) {
-		ret = lockdownd_pair(client_loc, NULL);
-
-		if (LOCKDOWN_E_SUCCESS == ret) {
-			ret = lockdownd_validate_pair(client_loc, NULL);
-		} else if (LOCKDOWN_E_PAIRING_DIALOG_PENDING == ret) {
-			debug_info("Device shows the pairing dialog.");
+		/* if not paired yet, let's do it now */
+		if (LOCKDOWN_E_INVALID_HOST_ID == ret) {
+			free(host_id);
+			host_id = NULL;
+			ret = lockdownd_pair(client_loc, NULL);
+			if (LOCKDOWN_E_SUCCESS == ret) {
+				ret = lockdownd_validate_pair(client_loc, NULL);
+			}
 		}
 	}
 
@@ -660,18 +767,14 @@ lockdownd_error_t lockdownd_client_new_with_handshake(idevice_t device, lockdown
 			debug_info("Session opening failed.");
 		}
 
-		if (host_id) {
-			free(host_id);
-			host_id = NULL;
-		}
 	}
-	
+
 	if (LOCKDOWN_E_SUCCESS == ret) {
 		*client = client_loc;
 	} else {
 		lockdownd_client_free(client_loc);
 	}
-
+	free(host_id);
 	return ret;
 }
 
@@ -743,7 +846,8 @@ static lockdownd_error_t pair_record_generate(lockdownd_client_t client, plist_t
 	}
 
 	/* set SystemBUID */
-	if (userpref_read_system_buid(&system_buid)) {
+	userpref_read_system_buid(&system_buid);
+	if (system_buid) {
 		plist_dict_set_item(*pair_record, USERPREF_SYSTEM_BUID_KEY, plist_new_string(system_buid));
 	}
 
@@ -765,11 +869,13 @@ leave:
 /**
  * Function used internally by lockdownd_pair() and lockdownd_validate_pair()
  *
- * @param client The lockdown client to pair with.
+ * @param client The lockdown client
  * @param pair_record The pair record to use for pairing. If NULL is passed, then
  *    the pair records from the current machine are used. New records will be
  *    generated automatically when pairing is done for the first time.
  * @param verb This is either "Pair", "ValidatePair" or "Unpair".
+ * @param options The pairing options to pass.
+ * @param response If non-NULL a pointer to lockdownd's response dictionary is returned.
  *
  * @return LOCKDOWN_E_SUCCESS on success, NP_E_INVALID_ARG when client is NULL,
  *  LOCKDOWN_E_PLIST_ERROR if the pair_record certificates are wrong,
@@ -777,7 +883,7 @@ leave:
  *  LOCKDOWN_E_PASSWORD_PROTECTED if the device is password protected,
  *  LOCKDOWN_E_INVALID_HOST_ID if the device does not know the caller's host id
  */
-static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_pair_record_t pair_record, const char *verb)
+static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_pair_record_t pair_record, const char *verb, plist_t options, plist_t *result)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -813,12 +919,8 @@ static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_
 			lockdownd_get_value(client, NULL, "WiFiAddress", &wifi_node);
 		} else {
 			/* use existing pair record */
-			if (userpref_has_pair_record(client->udid)) {
-				userpref_read_pair_record(client->udid, &pair_record_plist);
-				if (!pair_record_plist) {
-					return LOCKDOWN_E_INVALID_CONF;
-				}
-			} else {
+			userpref_read_pair_record(client->udid, &pair_record_plist);
+			if (!pair_record_plist) {
 				return LOCKDOWN_E_INVALID_HOST_ID;
 			}
 		}
@@ -837,9 +939,9 @@ static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_
 	plist_dict_set_item(dict, "Request", plist_new_string(verb));
 	plist_dict_set_item(dict, "ProtocolVersion", plist_new_string(LOCKDOWN_PROTOCOL_VERSION));
 
-	plist_t options = plist_new_dict();
-	plist_dict_set_item(options, "ExtendedPairingErrors", plist_new_bool(1));
-	plist_dict_set_item(dict, "PairingOptions", options);
+	if (options) {
+		plist_dict_set_item(dict, "PairingOptions", plist_copy(options));
+	}
 
 	/* send to device */
 	ret = lockdownd_send(client, dict);
@@ -866,11 +968,11 @@ static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_
 	if (strcmp(verb, "Unpair") == 0) {
 		/* workaround for Unpair giving back ValidatePair,
 		 * seems to be a bug in the device's fw */
-		if (lockdown_check_result(dict, NULL) != RESULT_SUCCESS) {
+		if (lockdown_check_result(dict, NULL) != LOCKDOWN_E_SUCCESS) {
 			ret = LOCKDOWN_E_PAIRING_FAILED;
 		}
 	} else {
-		if (lockdown_check_result(dict, verb) != RESULT_SUCCESS) {
+		if (lockdown_check_result(dict, verb) != LOCKDOWN_E_SUCCESS) {
 			ret = LOCKDOWN_E_PAIRING_FAILED;
 		}
 	}
@@ -890,8 +992,6 @@ static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_
 					if (extra_node && plist_get_node_type(extra_node) == PLIST_DATA) {
 						debug_info("Saving EscrowBag from response in pair record");
 						plist_dict_set_item(pair_record_plist, USERPREF_ESCROW_BAG_KEY, plist_copy(extra_node));
-						plist_free(extra_node);
-						extra_node = NULL;
 					}
 
 					/* save previously retrieved wifi mac address in pair record */
@@ -902,7 +1002,7 @@ static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_
 						wifi_node = NULL;
 					}
 
-					userpref_save_pair_record(client->udid, pair_record_plist);
+					userpref_save_pair_record(client->udid, client->mux_id, pair_record_plist);
 				}
 			}
 		} else {
@@ -918,20 +1018,9 @@ static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_
 			plist_get_string_val(error_node, &value);
 			if (value) {
 				/* the first pairing fails if the device is password protected */
-				if (!strcmp(value, "PasswordProtected")) {
-					ret = LOCKDOWN_E_PASSWORD_PROTECTED;
-				} else if (!strcmp(value, "InvalidHostID")) {
-					ret = LOCKDOWN_E_INVALID_HOST_ID;
-				} else if (!strcmp(value, "UserDeniedPairing")) {
-					ret = LOCKDOWN_E_USER_DENIED_PAIRING;
-				} else if (!strcmp(value, "PairingDialogResponsePending")) {
-					ret = LOCKDOWN_E_PAIRING_DIALOG_PENDING;
-				}
+				ret = lockdownd_strtoerr(value);
 				free(value);
 			}
-
-			plist_free(error_node);
-			error_node = NULL;
 		}
 	}
 
@@ -945,28 +1034,45 @@ static lockdownd_error_t lockdownd_do_pair(lockdownd_client_t client, lockdownd_
 		wifi_node = NULL;
 	}
 
-	plist_free(dict);
-	dict = NULL;
+	if (result) {
+		*result = dict;
+	} else {
+		plist_free(dict);
+		dict = NULL;
+	}
 
 	return ret;
 }
 
-lockdownd_error_t lockdownd_pair(lockdownd_client_t client, lockdownd_pair_record_t pair_record)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_pair(lockdownd_client_t client, lockdownd_pair_record_t pair_record)
 {
-	return lockdownd_do_pair(client, pair_record, "Pair");
+
+	plist_t options = plist_new_dict();
+	plist_dict_set_item(options, "ExtendedPairingErrors", plist_new_bool(1));
+
+	lockdownd_error_t ret = lockdownd_do_pair(client, pair_record, "Pair", options, NULL);
+
+	plist_free(options);
+
+	return ret;
 }
 
-lockdownd_error_t lockdownd_validate_pair(lockdownd_client_t client, lockdownd_pair_record_t pair_record)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_pair_with_options(lockdownd_client_t client, lockdownd_pair_record_t pair_record, plist_t options, plist_t *response)
 {
-	return lockdownd_do_pair(client, pair_record, "ValidatePair");
+	return lockdownd_do_pair(client, pair_record, "Pair", options, response);
 }
 
-lockdownd_error_t lockdownd_unpair(lockdownd_client_t client, lockdownd_pair_record_t pair_record)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_validate_pair(lockdownd_client_t client, lockdownd_pair_record_t pair_record)
 {
-	return lockdownd_do_pair(client, pair_record, "Unpair");
+	return lockdownd_do_pair(client, pair_record, "ValidatePair", NULL, NULL);
 }
 
-lockdownd_error_t lockdownd_enter_recovery(lockdownd_client_t client)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_unpair(lockdownd_client_t client, lockdownd_pair_record_t pair_record)
+{
+	return lockdownd_do_pair(client, pair_record, "Unpair", NULL, NULL);
+}
+
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_enter_recovery(lockdownd_client_t client)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -985,16 +1091,18 @@ lockdownd_error_t lockdownd_enter_recovery(lockdownd_client_t client)
 
 	ret = lockdownd_receive(client, &dict);
 
-	if (lockdown_check_result(dict, "EnterRecovery") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "EnterRecovery");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
 	}
+
 	plist_free(dict);
 	dict = NULL;
+
 	return ret;
 }
 
-lockdownd_error_t lockdownd_goodbye(lockdownd_client_t client)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_goodbye(lockdownd_client_t client)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -1017,17 +1125,18 @@ lockdownd_error_t lockdownd_goodbye(lockdownd_client_t client)
 		return LOCKDOWN_E_PLIST_ERROR;
 	}
 
-	if (lockdown_check_result(dict, "Goodbye") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "Goodbye");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
 	}
+
 	plist_free(dict);
 	dict = NULL;
 
 	return ret;
 }
 
-lockdownd_error_t lockdownd_start_session(lockdownd_client_t client, const char *host_id, char **session_id, int *ssl_enabled)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_start_session(lockdownd_client_t client, const char *host_id, char **session_id, int *ssl_enabled)
 {
 	lockdownd_error_t ret = LOCKDOWN_E_SUCCESS;
 	plist_t dict = NULL;
@@ -1073,17 +1182,8 @@ lockdownd_error_t lockdownd_start_session(lockdownd_client_t client, const char 
 	if (!dict)
 		return LOCKDOWN_E_PLIST_ERROR;
 
-	if (lockdown_check_result(dict, "StartSession") == RESULT_FAILURE) {
-		plist_t error_node = plist_dict_get_item(dict, "Error");
-		if (error_node && PLIST_STRING == plist_get_node_type(error_node)) {
-			char *error = NULL;
-			plist_get_string_val(error_node, &error);
-			if (!strcmp(error, "InvalidHostID")) {
-				ret = LOCKDOWN_E_INVALID_HOST_ID;
-			}
-			free(error);
-		}
-	} else {
+	ret = lockdown_check_result(dict, "StartSession");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		uint8_t use_ssl = 0;
 
 		plist_t enable_ssl = plist_dict_get_item(dict, "EnableSessionSSL");
@@ -1109,19 +1209,14 @@ lockdownd_error_t lockdownd_start_session(lockdownd_client_t client, const char 
 			debug_info("Failed to get SessionID!");
 		}
 
-		debug_info("Enable SSL Session: %s", (use_ssl?"true":"false"));
+		debug_info("Enable SSL Session: %s", (use_ssl ? "true" : "false"));
 
 		if (use_ssl) {
-			ret = property_list_service_enable_ssl(client->parent);
-			if (ret == PROPERTY_LIST_SERVICE_E_SUCCESS) {
-				client->ssl_enabled = 1;
-			} else {
-				ret = LOCKDOWN_E_SSL_ERROR;
-				client->ssl_enabled = 0;
-			}
+			ret = lockdownd_error(property_list_service_enable_ssl(client->parent));
+			client->ssl_enabled = (ret == LOCKDOWN_E_SUCCESS ? 1 : 0);
 		} else {
-			client->ssl_enabled = 0;
 			ret = LOCKDOWN_E_SUCCESS;
+			client->ssl_enabled = 0;
 		}
 	}
 
@@ -1131,7 +1226,71 @@ lockdownd_error_t lockdownd_start_session(lockdownd_client_t client, const char 
 	return ret;
 }
 
-lockdownd_error_t lockdownd_start_service(lockdownd_client_t client, const char *identifier, lockdownd_service_descriptor_t *service)
+/**
+ * Internal function used by lockdownd_do_start_service to create the
+ * StartService request's plist.
+ *
+ * @param client The lockdownd client
+ * @param identifier The identifier of the service to start
+ * @param send_escrow_bag Should we send the device's escrow bag with the request
+ * @param request The request's plist on success, NULL on failure
+ *
+ * @return LOCKDOWN_E_SUCCESS on success, LOCKDOWN_E_INVALID_CONF on failure
+ * to read the escrow bag from the device's record (when used).
+ */
+static lockdownd_error_t lockdownd_build_start_service_request(lockdownd_client_t client, const char *identifier, int send_escrow_bag, plist_t *request)
+{
+	plist_t dict = plist_new_dict();
+
+	/* create the basic request params */
+	plist_dict_add_label(dict, client->label);
+	plist_dict_set_item(dict, "Request", plist_new_string("StartService"));
+	plist_dict_set_item(dict, "Service", plist_new_string(identifier));
+
+	/* if needed - get the escrow bag for the device and send it with the request */
+	if (send_escrow_bag) {
+		/* get the pairing record */
+		plist_t pair_record = NULL;
+		userpref_read_pair_record(client->udid, &pair_record);
+		if (!pair_record) {
+			debug_info("ERROR: failed to read pair record for device: %s", client->udid);
+			plist_free(dict);
+			return LOCKDOWN_E_INVALID_CONF;
+		}
+
+		/* try to read the escrow bag from the record */
+		plist_t escrow_bag = plist_dict_get_item(pair_record, USERPREF_ESCROW_BAG_KEY);
+		if (!escrow_bag || (PLIST_DATA != plist_get_node_type(escrow_bag))) {
+			debug_info("ERROR: Failed to retrieve the escrow bag from the device's record");
+			plist_free(dict);
+			plist_free(pair_record);
+			return LOCKDOWN_E_INVALID_CONF;
+		}
+
+		debug_info("Adding escrow bag to StartService for %s", identifier);
+		plist_dict_set_item(dict, USERPREF_ESCROW_BAG_KEY, plist_copy(escrow_bag));
+		plist_free(pair_record);
+	}
+
+	*request = dict;
+	return LOCKDOWN_E_SUCCESS;
+}
+
+/**
+ * Function used internally by lockdownd_start_service and lockdownd_start_service_with_escrow_bag.
+ *
+ * @param client The lockdownd client
+ * @param identifier The identifier of the service to start
+ * @param send_escrow_bag Should we send the device's escrow bag with the request
+ * @param descriptor The service descriptor on success or NULL on failure
+ *
+ * @return LOCKDOWN_E_SUCCESS on success, LOCKDOWN_E_INVALID_ARG if a parameter
+ *  is NULL, LOCKDOWN_E_INVALID_SERVICE if the requested service is not known
+ *  by the device, LOCKDOWN_E_START_SERVICE_FAILED if the service could not because
+ *  started by the device, LOCKDOWN_E_INVALID_CONF if the host id or escrow bag (when
+ *  used) are missing from the device record.
+ */
+static lockdownd_error_t lockdownd_do_start_service(lockdownd_client_t client, const char *identifier, int send_escrow_bag, lockdownd_service_descriptor_t *service)
 {
 	if (!client || !identifier || !service)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -1146,10 +1305,10 @@ lockdownd_error_t lockdownd_start_service(lockdownd_client_t client, const char 
 	uint16_t port_loc = 0;
 	lockdownd_error_t ret = LOCKDOWN_E_UNKNOWN_ERROR;
 
-	dict = plist_new_dict();
-	plist_dict_add_label(dict, client->label);
-	plist_dict_set_item(dict,"Request", plist_new_string("StartService"));
-	plist_dict_set_item(dict,"Service", plist_new_string(identifier));
+	/* create StartService request */
+	ret = lockdownd_build_start_service_request(client, identifier, send_escrow_bag, &dict);
+	if (LOCKDOWN_E_SUCCESS != ret)
+		return ret;
 
 	/* send to device */
 	ret = lockdownd_send(client, dict);
@@ -1167,8 +1326,8 @@ lockdownd_error_t lockdownd_start_service(lockdownd_client_t client, const char 
 	if (!dict)
 		return LOCKDOWN_E_PLIST_ERROR;
 
-	ret = LOCKDOWN_E_UNKNOWN_ERROR;
-	if (lockdown_check_result(dict, "StartService") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "StartService");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		if (*service == NULL)
 			*service = (lockdownd_service_descriptor_t)malloc(sizeof(struct lockdownd_service_descriptor));
 		(*service)->port = 0;
@@ -1197,26 +1356,32 @@ lockdownd_error_t lockdownd_start_service(lockdownd_client_t client, const char 
 			(*service)->ssl_enabled = b;
 		}
 	} else {
-		ret = LOCKDOWN_E_START_SERVICE_FAILED;
 		plist_t error_node = plist_dict_get_item(dict, "Error");
 		if (error_node && PLIST_STRING == plist_get_node_type(error_node)) {
 			char *error = NULL;
 			plist_get_string_val(error_node, &error);
-			if (!strcmp(error, "InvalidService")) {
-				ret = LOCKDOWN_E_INVALID_SERVICE;
-			} else if (!strcmp(error, "NoRunningSession")) {
-				ret = LOCKDOWN_E_NO_RUNNING_SESSION;
-			}
+			ret = lockdownd_strtoerr(error);
 			free(error);
 		}
 	}
 
 	plist_free(dict);
 	dict = NULL;
+
 	return ret;
 }
 
-lockdownd_error_t lockdownd_activate(lockdownd_client_t client, plist_t activation_record)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_start_service(lockdownd_client_t client, const char *identifier, lockdownd_service_descriptor_t *service)
+{
+	return lockdownd_do_start_service(client, identifier, 0, service);
+}
+
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_start_service_with_escrow_bag(lockdownd_client_t client, const char *identifier, lockdownd_service_descriptor_t *service)
+{
+	return lockdownd_do_start_service(client, identifier, 1, service);
+}
+
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_activate(lockdownd_client_t client, plist_t activation_record)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -1244,30 +1409,18 @@ lockdownd_error_t lockdownd_activate(lockdownd_client_t client, plist_t activati
 		return LOCKDOWN_E_PLIST_ERROR;
 	}
 
-	ret = LOCKDOWN_E_ACTIVATION_FAILED;
-	if (lockdown_check_result(dict, "Activate") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "Activate");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
-		
-	} else {
-		plist_t error_node = plist_dict_get_item(dict, "Error");
-		if (error_node && PLIST_STRING == plist_get_node_type(error_node)) {
-			char *error = NULL;
-			plist_get_string_val(error_node, &error);
-			if (!strcmp(error, "InvalidActivationRecord")) {
-				ret = LOCKDOWN_E_INVALID_ACTIVATION_RECORD;
-			}
-			free(error);
-		}
 	}
-	
+
 	plist_free(dict);
 	dict = NULL;
 
 	return ret;
 }
 
-lockdownd_error_t lockdownd_deactivate(lockdownd_client_t client)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_deactivate(lockdownd_client_t client)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -1291,11 +1444,11 @@ lockdownd_error_t lockdownd_deactivate(lockdownd_client_t client)
 		return LOCKDOWN_E_PLIST_ERROR;
 	}
 
-	ret = LOCKDOWN_E_UNKNOWN_ERROR;
-	if (lockdown_check_result(dict, "Deactivate") == RESULT_SUCCESS) {
+	ret = lockdown_check_result(dict, "Deactivate");
+	if (ret == LOCKDOWN_E_SUCCESS) {
 		debug_info("success");
-		ret = LOCKDOWN_E_SUCCESS;
 	}
+
 	plist_free(dict);
 	dict = NULL;
 
@@ -1314,7 +1467,7 @@ static void str_remove_spaces(char *source)
 	*dest = 0;
 }
 
-lockdownd_error_t lockdownd_get_sync_data_classes(lockdownd_client_t client, char ***classes, int *count)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_get_sync_data_classes(lockdownd_client_t client, char ***classes, int *count)
 {
 	if (!client)
 		return LOCKDOWN_E_INVALID_ARG;
@@ -1347,14 +1500,16 @@ lockdownd_error_t lockdownd_get_sync_data_classes(lockdownd_client_t client, cha
 	}
 
 	while((value = plist_array_get_item(dict, *count)) != NULL) {
-			plist_get_string_val(value, &val);
-			newlist = realloc(*classes, sizeof(char*) * (*count+1));
-			str_remove_spaces(val);
-			asprintf(&newlist[*count], "com.apple.%s", val);
-			free(val);
-			val = NULL;
-			*classes = newlist;
-			*count = *count+1;
+		plist_get_string_val(value, &val);
+		newlist = realloc(*classes, sizeof(char*) * (*count+1));
+		str_remove_spaces(val);
+		if (asprintf(&newlist[*count], "com.apple.%s", val) < 0) {
+			debug_info("ERROR: asprintf failed");
+		}
+		free(val);
+		val = NULL;
+		*classes = newlist;
+		*count = *count+1;
 	}
 
 	newlist = realloc(*classes, sizeof(char*) * (*count+1));
@@ -1367,8 +1522,7 @@ lockdownd_error_t lockdownd_get_sync_data_classes(lockdownd_client_t client, cha
 	return LOCKDOWN_E_SUCCESS;
 }
 
-
-lockdownd_error_t lockdownd_data_classes_free(char **classes)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_data_classes_free(char **classes)
 {
 	if (classes) {
 		int i = 0;
@@ -1380,7 +1534,7 @@ lockdownd_error_t lockdownd_data_classes_free(char **classes)
 	return LOCKDOWN_E_SUCCESS;
 }
 
-lockdownd_error_t lockdownd_service_descriptor_free(lockdownd_service_descriptor_t service)
+LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_service_descriptor_free(lockdownd_service_descriptor_t service)
 {
 	if (service)
 		free(service);

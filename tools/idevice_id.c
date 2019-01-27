@@ -8,16 +8,20 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -32,16 +36,17 @@
 static void print_usage(int argc, char **argv)
 {
 	char *name = NULL;
-	
+
 	name = strrchr(argv[0], '/');
 	printf("Usage: %s [OPTIONS] [UDID]\n", (name ? name + 1: argv[0]));
 	printf("Prints device name or a list of attached devices.\n\n");
-	printf("  The UDID is a 40-digit hexadecimal number of the device\n");
+	printf("  UDID is the unique device identifier of the device\n");
 	printf("  for which the name should be retrieved.\n\n");
 	printf("  -l, --list\t\tlist UDID of all attached devices\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }
 
 int main(int argc, char **argv)
@@ -74,7 +79,7 @@ int main(int argc, char **argv)
 	/* check if udid was passed */
 	if (mode == MODE_SHOW_ID) {
 		i--;
-		if (!argv[i] || (strlen(argv[i]) != 40)) {
+		if (argc < 2 || !argv[i] || !*argv[i]) {
 			print_usage(argc, argv);
 			return 0;
 		}
@@ -85,7 +90,7 @@ int main(int argc, char **argv)
 	case MODE_SHOW_ID:
 		idevice_new(&device, udid);
 		if (!device) {
-			fprintf(stderr, "ERROR: No device with UDID=%s attached.\n", udid);
+			fprintf(stderr, "ERROR: No device with UDID %s attached.\n", udid);
 			return -2;
 		}
 

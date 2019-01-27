@@ -1,22 +1,22 @@
 /*
- * syslog_relay.c 
+ * syslog_relay.c
  * com.apple.syslog_relay service implementation.
- * 
+ *
  * Copyright (c) 2013 Martin Szulecki All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -61,7 +61,7 @@ static syslog_relay_error_t syslog_relay_error(service_error_t err)
 	return SYSLOG_RELAY_E_UNKNOWN_ERROR;
 }
 
-syslog_relay_error_t syslog_relay_client_new(idevice_t device, lockdownd_service_descriptor_t service, syslog_relay_client_t * client)
+LIBIMOBILEDEVICE_API syslog_relay_error_t syslog_relay_client_new(idevice_t device, lockdownd_service_descriptor_t service, syslog_relay_client_t * client)
 {
 	*client = NULL;
 
@@ -89,14 +89,14 @@ syslog_relay_error_t syslog_relay_client_new(idevice_t device, lockdownd_service
 	return 0;
 }
 
-syslog_relay_error_t syslog_relay_client_start_service(idevice_t device, syslog_relay_client_t * client, const char* label)
+LIBIMOBILEDEVICE_API syslog_relay_error_t syslog_relay_client_start_service(idevice_t device, syslog_relay_client_t * client, const char* label)
 {
 	syslog_relay_error_t err = SYSLOG_RELAY_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, SYSLOG_RELAY_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(syslog_relay_client_new), &err);
 	return err;
 }
 
-syslog_relay_error_t syslog_relay_client_free(syslog_relay_client_t client)
+LIBIMOBILEDEVICE_API syslog_relay_error_t syslog_relay_client_free(syslog_relay_client_t client)
 {
 	if (!client)
 		return SYSLOG_RELAY_E_INVALID_ARG;
@@ -106,18 +106,20 @@ syslog_relay_error_t syslog_relay_client_free(syslog_relay_client_t client)
 	if (client->worker) {
 		debug_info("Joining syslog capture callback worker thread");
 		thread_join(client->worker);
+		thread_free(client->worker);
+		client->worker = (thread_t)NULL;
 	}
 	free(client);
 
 	return err;
 }
 
-syslog_relay_error_t syslog_relay_receive(syslog_relay_client_t client, char* data, uint32_t size, uint32_t *received)
+LIBIMOBILEDEVICE_API syslog_relay_error_t syslog_relay_receive(syslog_relay_client_t client, char* data, uint32_t size, uint32_t *received)
 {
 	return syslog_relay_receive_with_timeout(client, data, size, received, 1000);
 }
 
-syslog_relay_error_t syslog_relay_receive_with_timeout(syslog_relay_client_t client, char* data, uint32_t size, uint32_t *received, unsigned int timeout)
+LIBIMOBILEDEVICE_API syslog_relay_error_t syslog_relay_receive_with_timeout(syslog_relay_client_t client, char* data, uint32_t size, uint32_t *received, unsigned int timeout)
 {
 	syslog_relay_error_t res = SYSLOG_RELAY_E_UNKNOWN_ERROR;
 	int bytes = 0;
@@ -139,7 +141,7 @@ syslog_relay_error_t syslog_relay_receive_with_timeout(syslog_relay_client_t cli
 
 void *syslog_relay_worker(void *arg)
 {
-	service_error_t ret = SERVICE_E_UNKNOWN_ERROR;
+	syslog_relay_error_t ret = SYSLOG_RELAY_E_UNKNOWN_ERROR;
 	struct syslog_relay_worker_thread *srwt = (struct syslog_relay_worker_thread*)arg;
 
 	if (!srwt)
@@ -171,7 +173,7 @@ void *syslog_relay_worker(void *arg)
 	return NULL;
 }
 
-syslog_relay_error_t syslog_relay_start_capture(syslog_relay_client_t client, syslog_relay_receive_cb_t callback, void* user_data)
+LIBIMOBILEDEVICE_API syslog_relay_error_t syslog_relay_start_capture(syslog_relay_client_t client, syslog_relay_receive_cb_t callback, void* user_data)
 {
 	if (!client || !callback)
 		return SYSLOG_RELAY_E_INVALID_ARG;
@@ -190,7 +192,7 @@ syslog_relay_error_t syslog_relay_start_capture(syslog_relay_client_t client, sy
 		srwt->cbfunc = callback;
 		srwt->user_data = user_data;
 
-		if (thread_create(&client->worker, syslog_relay_worker, srwt) == 0) {
+		if (thread_new(&client->worker, syslog_relay_worker, srwt) == 0) {
 			res = SYSLOG_RELAY_E_SUCCESS;
 		}
 	}
@@ -198,7 +200,7 @@ syslog_relay_error_t syslog_relay_start_capture(syslog_relay_client_t client, sy
 	return res;
 }
 
-syslog_relay_error_t syslog_relay_stop_capture(syslog_relay_client_t client)
+LIBIMOBILEDEVICE_API syslog_relay_error_t syslog_relay_stop_capture(syslog_relay_client_t client)
 {
 	if (client->worker) {
 		/* notify thread to finish */
@@ -206,6 +208,7 @@ syslog_relay_error_t syslog_relay_stop_capture(syslog_relay_client_t client)
 		client->parent = NULL;
 		/* join thread to make it exit */
 		thread_join(client->worker);
+		thread_free(client->worker);
 		client->worker = (thread_t)NULL;
 		client->parent = parent;
 	}

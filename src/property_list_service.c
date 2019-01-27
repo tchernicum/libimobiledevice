@@ -1,4 +1,4 @@
-/* 
+/*
  * property_list_service.c
  * PropertyList service implementation.
  *
@@ -8,15 +8,15 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #ifdef HAVE_CONFIG_H
 #include <config.h>
@@ -54,7 +54,7 @@ static property_list_service_error_t service_to_property_list_service_error(serv
 	return PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR;
 }
 
-property_list_service_error_t property_list_service_client_new(idevice_t device, lockdownd_service_descriptor_t service, property_list_service_client_t *client)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_client_new(idevice_t device, lockdownd_service_descriptor_t service, property_list_service_client_t *client)
 {
 	if (!device || !service || service->port == 0 || !client || *client)
 		return PROPERTY_LIST_SERVICE_E_INVALID_ARG;
@@ -74,7 +74,7 @@ property_list_service_error_t property_list_service_client_new(idevice_t device,
 	return PROPERTY_LIST_SERVICE_E_SUCCESS;
 }
 
-property_list_service_error_t property_list_service_client_free(property_list_service_client_t client)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_client_free(property_list_service_client_t client)
 {
 	if (!client)
 		return PROPERTY_LIST_SERVICE_E_INVALID_ARG;
@@ -98,7 +98,8 @@ property_list_service_error_t property_list_service_client_free(property_list_se
  * @return PROPERTY_LIST_SERVICE_E_SUCCESS on success,
  *      PROPERTY_LIST_SERVICE_E_INVALID_ARG when one or more parameters are
  *      invalid, PROPERTY_LIST_SERVICE_E_PLIST_ERROR when dict is not a valid
- *      plist, or PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR when an unspecified
+ *      plist, PROPERTY_LIST_SERVICE_E_MUX_ERROR when a communication error
+ *      occurs, or PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR when an unspecified
  *      error occurs.
  */
 static property_list_service_error_t internal_plist_send(property_list_service_client_t client, plist_t plist, int binary)
@@ -140,6 +141,7 @@ static property_list_service_error_t internal_plist_send(property_list_service_c
 	}
 	if (bytes <= 0) {
 		debug_info("ERROR: sending to device failed.");
+		res = PROPERTY_LIST_SERVICE_E_MUX_ERROR;
 	}
 
 	free(content);
@@ -147,12 +149,12 @@ static property_list_service_error_t internal_plist_send(property_list_service_c
 	return res;
 }
 
-property_list_service_error_t property_list_service_send_xml_plist(property_list_service_client_t client, plist_t plist)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_send_xml_plist(property_list_service_client_t client, plist_t plist)
 {
 	return internal_plist_send(client, plist, 0);
 }
 
-property_list_service_error_t property_list_service_send_binary_plist(property_list_service_client_t client, plist_t plist)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_send_binary_plist(property_list_service_client_t client, plist_t plist)
 {
 	return internal_plist_send(client, plist, 1);
 }
@@ -193,81 +195,78 @@ static property_list_service_error_t internal_plist_receive_timeout(property_lis
 		debug_info("initial read failed!");
 		return PROPERTY_LIST_SERVICE_E_MUX_ERROR;
 	} else {
-		pktlen = be32toh(pktlen);
-		if (pktlen < (1 << 24)) { /* prevent huge buffers */
-			uint32_t curlen = 0;
-			char *content = NULL;
-			debug_info("%d bytes following", pktlen);
-			content = (char*)malloc(pktlen);
-			if (!content) {
-				debug_info("out of memory when allocating %d bytes", pktlen);
-				return PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR;
-			}
+		uint32_t curlen = 0;
+		char *content = NULL;
 
-			while (curlen < pktlen) {
-				service_receive(client->parent, content+curlen, pktlen-curlen, &bytes);
-				if (bytes <= 0) {
-					res = PROPERTY_LIST_SERVICE_E_MUX_ERROR;
-					break;
-				}
-				debug_info("received %d bytes", bytes);
-				curlen += bytes;
+		pktlen = be32toh(pktlen);
+		debug_info("%d bytes following", pktlen);
+		content = (char*)malloc(pktlen);
+		if (!content) {
+			debug_info("out of memory when allocating %d bytes", pktlen);
+			return PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR;
+		}
+
+		while (curlen < pktlen) {
+			service_receive(client->parent, content+curlen, pktlen-curlen, &bytes);
+			if (bytes <= 0) {
+				res = PROPERTY_LIST_SERVICE_E_MUX_ERROR;
+				break;
 			}
-			if (curlen < pktlen) {
-				debug_info("received incomplete packet (%d of %d bytes)", curlen, pktlen);
-				if (curlen > 0) {
-					debug_info("incomplete packet following:");
-					debug_buffer(content, curlen);
-				}
-				free(content);
-				return res;
-			}
-			if ((pktlen > 8) && !memcmp(content, "bplist00", 8)) {
-				plist_from_bin(content, pktlen, plist);
-			} else if ((pktlen > 5) && !memcmp(content, "<?xml", 5)) {
-				/* iOS 4.3+ hack: plist data might contain invalid characters, thus we convert those to spaces */
-				for (bytes = 0; bytes < pktlen-1; bytes++) {
-					if ((content[bytes] >= 0) && (content[bytes] < 0x20) && (content[bytes] != 0x09) && (content[bytes] != 0x0a) && (content[bytes] != 0x0d))
-						content[bytes] = 0x20;
-				}
-				plist_from_xml(content, pktlen, plist);
-			} else {
-				debug_info("WARNING: received unexpected non-plist content");
-				debug_buffer(content, pktlen);
-			}
-			if (*plist) {
-				debug_plist(*plist);
-				res = PROPERTY_LIST_SERVICE_E_SUCCESS;
-			} else {
-				res = PROPERTY_LIST_SERVICE_E_PLIST_ERROR;
+			debug_info("received %d bytes", bytes);
+			curlen += bytes;
+		}
+		if (curlen < pktlen) {
+			debug_info("received incomplete packet (%d of %d bytes)", curlen, pktlen);
+			if (curlen > 0) {
+				debug_info("incomplete packet following:");
+				debug_buffer(content, curlen);
 			}
 			free(content);
-			content = NULL;
-		} else {
-			res = PROPERTY_LIST_SERVICE_E_UNKNOWN_ERROR;
+			return res;
 		}
+		if ((pktlen > 8) && !memcmp(content, "bplist00", 8)) {
+			plist_from_bin(content, pktlen, plist);
+		} else if ((pktlen > 5) && !memcmp(content, "<?xml", 5)) {
+			/* iOS 4.3+ hack: plist data might contain invalid characters, thus we convert those to spaces */
+			for (bytes = 0; bytes < pktlen-1; bytes++) {
+				if ((content[bytes] >= 0) && (content[bytes] < 0x20) && (content[bytes] != 0x09) && (content[bytes] != 0x0a) && (content[bytes] != 0x0d))
+					content[bytes] = 0x20;
+			}
+			plist_from_xml(content, pktlen, plist);
+		} else {
+			debug_info("WARNING: received unexpected non-plist content");
+			debug_buffer(content, pktlen);
+		}
+		if (*plist) {
+			debug_plist(*plist);
+			res = PROPERTY_LIST_SERVICE_E_SUCCESS;
+		} else {
+			res = PROPERTY_LIST_SERVICE_E_PLIST_ERROR;
+		}
+		free(content);
+		content = NULL;
 	}
 	return res;
 }
 
-property_list_service_error_t property_list_service_receive_plist_with_timeout(property_list_service_client_t client, plist_t *plist, unsigned int timeout)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_receive_plist_with_timeout(property_list_service_client_t client, plist_t *plist, unsigned int timeout)
 {
 	return internal_plist_receive_timeout(client, plist, timeout);
 }
 
-property_list_service_error_t property_list_service_receive_plist(property_list_service_client_t client, plist_t *plist)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_receive_plist(property_list_service_client_t client, plist_t *plist)
 {
 	return internal_plist_receive_timeout(client, plist, 10000);
 }
 
-property_list_service_error_t property_list_service_enable_ssl(property_list_service_client_t client)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_enable_ssl(property_list_service_client_t client)
 {
 	if (!client || !client->parent)
 		return PROPERTY_LIST_SERVICE_E_INVALID_ARG;
 	return service_to_property_list_service_error(service_enable_ssl(client->parent));
 }
 
-property_list_service_error_t property_list_service_disable_ssl(property_list_service_client_t client)
+LIBIMOBILEDEVICE_API property_list_service_error_t property_list_service_disable_ssl(property_list_service_client_t client)
 {
 	if (!client || !client->parent)
 		return PROPERTY_LIST_SERVICE_E_INVALID_ARG;

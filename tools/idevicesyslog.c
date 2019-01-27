@@ -8,16 +8,20 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -46,9 +50,12 @@ static syslog_relay_client_t syslog = NULL;
 static void syslog_callback(char c, void *user_data)
 {
 	putchar(c);
+	if (c == '\n') {
+		fflush(stdout);
+	}
 }
 
-static int start_logging()
+static int start_logging(void)
 {
 	idevice_error_t ret = idevice_new(&device, udid);
 	if (ret != IDEVICE_E_SUCCESS) {
@@ -56,9 +63,40 @@ static int start_logging()
 		return -1;
 	}
 
-	/* start and connect to syslog_relay service */
+	lockdownd_client_t lockdown = NULL;
+	lockdownd_error_t lerr = lockdownd_client_new_with_handshake(device, &lockdown, "idevicesyslog");
+	if (lerr != LOCKDOWN_E_SUCCESS) {
+		fprintf(stderr, "ERROR: Could not connect to lockdownd: %d\n", lerr);
+		idevice_free(device);
+		device = NULL;
+		return -1;
+	}
+
+	/* start syslog_relay service */
+	lockdownd_service_descriptor_t svc = NULL;
+	lerr = lockdownd_start_service(lockdown, SYSLOG_RELAY_SERVICE_NAME, &svc);
+	if (lerr == LOCKDOWN_E_PASSWORD_PROTECTED) {
+		fprintf(stderr, "*** Device is passcode protected, enter passcode on the device to continue ***\n");
+		while (1) {
+			lerr = lockdownd_start_service(lockdown, SYSLOG_RELAY_SERVICE_NAME, &svc);
+			if (lerr != LOCKDOWN_E_PASSWORD_PROTECTED) {
+				break;
+			}
+			sleep(1);
+		}
+	}
+	if (lerr != LOCKDOWN_E_SUCCESS) {
+		fprintf(stderr, "ERROR: Could not connect to lockdownd: %d\n", lerr);
+		idevice_free(device);
+		device = NULL;
+		return -1;
+	}
+	lockdownd_client_free(lockdown);
+
+	/* connect to syslog_relay service */
 	syslog_relay_error_t serr = SYSLOG_RELAY_E_UNKNOWN_ERROR;
-	serr = syslog_relay_client_start_service(device, &syslog, "idevicesyslog");
+	serr = syslog_relay_client_new(device, svc, &syslog);
+	lockdownd_service_descriptor_free(svc);
 	if (serr != SYSLOG_RELAY_E_SUCCESS) {
 		fprintf(stderr, "ERROR: Could not start service com.apple.syslog_relay.\n");
 		idevice_free(device);
@@ -83,7 +121,7 @@ static int start_logging()
 	return 0;
 }
 
-static void stop_logging()
+static void stop_logging(void)
 {
 	fflush(stdout);
 
@@ -147,7 +185,7 @@ int main(int argc, char *argv[])
 		}
 		else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--udid")) {
 			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
+			if (!argv[i] || !*argv[i]) {
 				print_usage(argc, argv);
 				return 0;
 			}
@@ -184,7 +222,7 @@ int main(int argc, char *argv[])
 	}
 	idevice_event_unsubscribe();
 	stop_logging();
- 
+
 	if (udid) {
 		free(udid);
 	}
@@ -195,13 +233,14 @@ int main(int argc, char *argv[])
 void print_usage(int argc, char **argv)
 {
 	char *name = NULL;
-	
+
 	name = strrchr(argv[0], '/');
 	printf("Usage: %s [OPTIONS]\n", (name ? name + 1: argv[0]));
 	printf("Relay syslog of a connected device.\n\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }
 

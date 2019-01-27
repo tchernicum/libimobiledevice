@@ -8,16 +8,20 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -36,7 +40,8 @@ enum cmd_mode {
 	CMD_SHUTDOWN,
 	CMD_DIAGNOSTICS,
 	CMD_MOBILEGESTALT,
-	CMD_IOREGISTRY
+	CMD_IOREGISTRY,
+	CMD_IOREGISTRY_ENTRY
 };
 
 static void print_xml(plist_t node)
@@ -74,7 +79,7 @@ int main(int argc, char **argv)
 		}
 		else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--udid")) {
 			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
+			if (!argv[i] || !*argv[i]) {
 				print_usage(argc, argv);
 				result = 0;
 				goto cleanup;
@@ -100,7 +105,7 @@ int main(int argc, char **argv)
 			cmd = CMD_DIAGNOSTICS;
 			/*  read type */
 			i++;
-			if (!argv[i] || ((strcmp(argv[i], "All") != 0) && (strcmp(argv[i], "WiFi") != 0) && (strcmp(argv[i], "GasGauge") != 0) && (strcmp(argv[i], "NAND") != 0))) {
+			if (!argv[i] || ((strcmp(argv[i], "All") != 0) && (strcmp(argv[i], "WiFi") != 0) && (strcmp(argv[i], "GasGauge") != 0) && (strcmp(argv[i], "NAND") != 0) && (strcmp(argv[i], "HDMI") != 0))) {
 				if (argv[i] == NULL) {
 					cmd_arg = strdup("All");
 					continue;
@@ -152,6 +157,15 @@ int main(int argc, char **argv)
 			}
 			continue;
 		}
+		else if (!strcmp(argv[i], "ioregentry")) {
+			cmd = CMD_IOREGISTRY_ENTRY;
+			/* read key */
+			i++;
+			if (argv[i]) {
+				cmd_arg = strdup(argv[i]);
+			}
+			continue;
+		}
 		else {
 			print_usage(argc, argv);
 			return 0;
@@ -166,16 +180,16 @@ int main(int argc, char **argv)
 
 	if (IDEVICE_E_SUCCESS != idevice_new(&device, udid)) {
 		if (udid) {
-			printf("No device found with udid %s, is it plugged in?\n", udid);	
+			printf("No device found with udid %s, is it plugged in?\n", udid);
 		} else {
 			printf("No device found, is it plugged in?\n");
 		}
 		goto cleanup;
 	}
 
-	if (LOCKDOWN_E_SUCCESS != lockdownd_client_new_with_handshake(device, &lockdown_client, "idevicediagnostics")) {
+	if (LOCKDOWN_E_SUCCESS != (ret = lockdownd_client_new_with_handshake(device, &lockdown_client, "idevicediagnostics"))) {
 		idevice_free(device);
-		printf("Unable to connect to lockdownd.\n");
+		printf("ERROR: Could not connect to lockdownd, error code %d\n", ret);
 		goto cleanup;
 	}
 
@@ -228,6 +242,16 @@ int main(int argc, char **argv)
 						printf("Unable to query mobilegestalt keys.\n");
 					}
 				break;
+				case CMD_IOREGISTRY_ENTRY:
+					if (diagnostics_relay_query_ioregistry_entry(diagnostics_client, cmd_arg == NULL ? "": cmd_arg, "", &node) == DIAGNOSTICS_RELAY_E_SUCCESS) {
+						if (node) {
+							print_xml(node);
+							result = EXIT_SUCCESS;
+						}
+					} else {
+						printf("Unable to retrieve IORegistry from device.\n");
+					}
+					break;
 				case CMD_IOREGISTRY:
 					if (diagnostics_relay_query_ioregistry_plane(diagnostics_client, cmd_arg == NULL ? "": cmd_arg, &node) == DIAGNOSTICS_RELAY_E_SUCCESS) {
 						if (node) {
@@ -288,12 +312,14 @@ void print_usage(int argc, char **argv)
 	printf("  diagnostics [TYPE]\t\tprint diagnostics information from device by TYPE (All, WiFi, GasGauge, NAND)\n");
 	printf("  mobilegestalt KEY [...]\tprint mobilegestalt keys passed as arguments seperated by a space.\n");
 	printf("  ioreg [PLANE]\t\t\tprint IORegistry of device, optionally by PLANE (IODeviceTree, IOPower, IOService) (iOS 5+ only)\n");
+	printf("  ioregentry [KEY]\t\tprint IORegistry entry of device (AppleARMPMUCharger, ASPStorage, ...) (iOS 5+ only)\n");
 	printf("  shutdown\t\t\tshutdown device\n");
 	printf("  restart\t\t\trestart device\n");
 	printf("  sleep\t\t\t\tput device into sleep mode (disconnects from host)\n\n");
 	printf(" The following OPTIONS are accepted:\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }

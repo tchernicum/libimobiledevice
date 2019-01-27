@@ -1,6 +1,6 @@
-AM_CPPFLAGS = -I$(top_srcdir)/include
+AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)
 
-AM_CFLAGS = $(GLOBAL_CFLAGS) $(libusbmuxd_CFLAGS) $(libplist_CFLAGS) $(LFS_CFLAGS)
+AM_CFLAGS = $(GLOBAL_CFLAGS) $(libusbmuxd_CFLAGS) $(libplist_CFLAGS) $(libgnutls_CFLAGS) $(libtasn1_CFLAGS) $(openssl_CFLAGS) $(LFS_CFLAGS)
 AM_LDFLAGS = $(libusbmuxd_LIBS) $(libplist_LIBS) ${libpthread_LIBS}
 
 noinst_LTLIBRARIES = libinternalcommon.la
@@ -14,5 +14,5 @@ libinternalcommon_la_SOURCES = \
 		       utils.c utils.h
 
 if WIN32
-libinternalcommon_la_LIBADD += -lole32
+libinternalcommon_la_LIBADD += -lole32 -lws2_32
 endif

@@ -8,16 +8,20 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <stdlib.h>
 #define _GNU_SOURCE 1
@@ -59,31 +63,31 @@ static void print_usage(int argc, char **argv)
 	name = strrchr(argv[0], '/');
 	printf("Usage: %s [OPTIONS] IMAGE_FILE IMAGE_SIGNATURE_FILE\n\n", (name ? name + 1: argv[0]));
 	printf("Mounts the specified disk image on the device.\n\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -l, --list\t\tList mount information\n");
 	printf("  -t, --imagetype\tImage type to use, default is 'Developer'\n");
 	printf("  -x, --xml\t\tUse XML output\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }
 
 static void parse_opts(int argc, char **argv)
 {
 	static struct option longopts[] = {
-		{"help", 0, NULL, 'h'},
-		{"udid", 0, NULL, 'u'},
-		{"list", 0, NULL, 'l'},
-		{"imagetype", 0, NULL, 't'},
-		{"xml", 0, NULL, 'x'},
-		{"debug", 0, NULL, 'd'},
+		{"help", no_argument, NULL, 'h'},
+		{"udid", required_argument, NULL, 'u'},
+		{"list", no_argument, NULL, 'l'},
+		{"imagetype", required_argument, NULL, 't'},
+		{"xml", no_argument, NULL, 'x'},
+		{"debug", no_argument, NULL, 'd'},
 		{NULL, 0, NULL, 0}
 	};
 	int c;
 
 	while (1) {
-		c = getopt_long(argc, argv, "hu:lt:xd", longopts,
-						(int *) 0);
+		c = getopt_long(argc, argv, "hu:lt:xd", longopts, NULL);
 		if (c == -1) {
 			break;
 		}
@@ -93,18 +97,20 @@ static void parse_opts(int argc, char **argv)
 			print_usage(argc, argv);
 			exit(0);
 		case 'u':
-			if (strlen(optarg) != 40) {
-				printf("%s: invalid UDID specified (length != 40)\n",
-					   argv[0]);
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: UDID must not be empty!\n");
 				print_usage(argc, argv);
 				exit(2);
 			}
+			free(udid);
 			udid = strdup(optarg);
 			break;
 		case 'l':
 			list_mode = 1;
 			break;
 		case 't':
+			if (imagetype)
+				free(imagetype);
 			imagetype = strdup(optarg);
 			break;
 		case 'x':
@@ -138,6 +144,7 @@ int main(int argc, char **argv)
 {
 	idevice_t device = NULL;
 	lockdownd_client_t lckd = NULL;
+	lockdownd_error_t ldret = LOCKDOWN_E_UNKNOWN_ERROR;
 	mobile_image_mounter_client_t mim = NULL;
 	afc_client_t afc = NULL;
 	lockdownd_service_descriptor_t service = NULL;
@@ -172,8 +179,8 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	if (LOCKDOWN_E_SUCCESS != lockdownd_client_new_with_handshake(device, &lckd, "ideviceimagemounter")) {
-		printf("ERROR: could not connect to lockdown. Exiting.\n");
+	if (LOCKDOWN_E_SUCCESS != (ldret = lockdownd_client_new_with_handshake(device, &lckd, "ideviceimagemounter"))) {
+		printf("ERROR: Could not connect to lockdown, error code %d.\n", ldret);
 		goto leave;
 	}
 
@@ -203,7 +210,7 @@ int main(int argc, char **argv)
 	if (mobile_image_mounter_new(device, service, &mim) != MOBILE_IMAGE_MOUNTER_E_SUCCESS) {
 		printf("ERROR: Could not connect to mobile_image_mounter!\n");
 		goto leave;
-	}	
+	}
 
 	if (service) {
 		lockdownd_service_descriptor_free(service);

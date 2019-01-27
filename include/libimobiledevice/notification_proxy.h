@@ -3,7 +3,8 @@
  * @brief Observe and post notifications.
  * \internal
  *
- * Copyright (c) 2009 Nikias Bassen All Rights Reserved.
+ * Copyright (c) 2010-2014 Martin Szulecki All Rights Reserved.
+ * Copyright (c) 2009-2010 Nikias Bassen All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -32,18 +33,14 @@ extern "C" {
 
 #define NP_SERVICE_NAME "com.apple.mobile.notification_proxy"
 
-/** @name Error Codes */
-/*@{*/
-#define NP_E_SUCCESS                0
-#define NP_E_INVALID_ARG           -1
-#define NP_E_PLIST_ERROR           -2
-#define NP_E_CONN_FAILED           -3
-
-#define NP_E_UNKNOWN_ERROR       -256
-/*@}*/
-
-/** Represents an error code. */
-typedef int16_t np_error_t;
+/** Error Codes */
+typedef enum {
+	NP_E_SUCCESS       =  0,
+	NP_E_INVALID_ARG   = -1,
+	NP_E_PLIST_ERROR   = -2,
+	NP_E_CONN_FAILED   = -3,
+	NP_E_UNKNOWN_ERROR = -256
+} np_error_t;
 
 /**
  * @name Notifications that can be send

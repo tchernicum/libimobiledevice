@@ -89,11 +89,11 @@ static void plist_dict_add_label(plist_t plist, const char *label)
 	}
 }
 
-restored_error_t restored_client_free(restored_client_t client)
+LIBIMOBILEDEVICE_API restored_error_t restored_client_free(restored_client_t client)
 {
 	if (!client)
 		return RESTORE_E_INVALID_ARG;
-		
+
 	restored_error_t ret = RESTORE_E_UNKNOWN_ERROR;
 
 	if (client->parent) {
@@ -110,7 +110,7 @@ restored_error_t restored_client_free(restored_client_t client)
 	if (client->label) {
 		free(client->label);
 	}
-	
+
 	if (client->info) {
 		plist_free(client->info);
 	}
@@ -119,7 +119,7 @@ restored_error_t restored_client_free(restored_client_t client)
 	return ret;
 }
 
-void restored_client_set_label(restored_client_t client, const char *label)
+LIBIMOBILEDEVICE_API void restored_client_set_label(restored_client_t client, const char *label)
 {
 	if (client) {
 		if (client->label)
@@ -129,11 +129,11 @@ void restored_client_set_label(restored_client_t client, const char *label)
 	}
 }
 
-restored_error_t restored_receive(restored_client_t client, plist_t *plist)
+LIBIMOBILEDEVICE_API restored_error_t restored_receive(restored_client_t client, plist_t *plist)
 {
 	if (!client || !plist || (plist && *plist))
 		return RESTORE_E_INVALID_ARG;
-		
+
 	restored_error_t ret = RESTORE_E_SUCCESS;
 	property_list_service_error_t err;
 
@@ -148,13 +148,13 @@ restored_error_t restored_receive(restored_client_t client, plist_t *plist)
 	return ret;
 }
 
-restored_error_t restored_send(restored_client_t client, plist_t plist)
+LIBIMOBILEDEVICE_API restored_error_t restored_send(restored_client_t client, plist_t plist)
 {
 	if (!client || !plist)
 		return RESTORE_E_INVALID_ARG;
 
 	restored_error_t ret = RESTORE_E_SUCCESS;
-	idevice_error_t err;
+	property_list_service_error_t err;
 
 	err = property_list_service_send_xml_plist(client->parent, plist);
 	if (err != PROPERTY_LIST_SERVICE_E_SUCCESS) {
@@ -163,7 +163,7 @@ restored_error_t restored_send(restored_client_t client, plist_t plist)
 	return ret;
 }
 
-restored_error_t restored_query_type(restored_client_t client, char **type, uint64_t *version)
+LIBIMOBILEDEVICE_API restored_error_t restored_query_type(restored_client_t client, char **type, uint64_t *version)
 {
 	if (!client)
 		return RESTORE_E_INVALID_ARG;
@@ -181,7 +181,7 @@ restored_error_t restored_query_type(restored_client_t client, char **type, uint
 	dict = NULL;
 
 	ret = restored_receive(client, &dict);
-	
+
 	if (RESTORE_E_SUCCESS != ret)
 		return ret;
 
@@ -222,7 +222,7 @@ restored_error_t restored_query_type(restored_client_t client, char **type, uint
 	return ret;
 }
 
-restored_error_t restored_query_value(restored_client_t client, const char *key, plist_t *value)
+LIBIMOBILEDEVICE_API restored_error_t restored_query_value(restored_client_t client, const char *key, plist_t *value)
 {
 	if (!client || !key)
 		return RESTORE_E_INVALID_ARG;
@@ -264,39 +264,40 @@ restored_error_t restored_query_value(restored_client_t client, const char *key,
 	return ret;
 }
 
-restored_error_t restored_get_value(restored_client_t client, const char *key, plist_t *value)
+LIBIMOBILEDEVICE_API restored_error_t restored_get_value(restored_client_t client, const char *key, plist_t *value)
 {
 	if (!client || !value || (value && *value))
 		return RESTORE_E_INVALID_ARG;
-		
+
 	if (!client->info)
 		return RESTORE_E_NOT_ENOUGH_DATA;
-		
+
 	restored_error_t ret = RESTORE_E_SUCCESS;
 	plist_t item = NULL;
-	
+
 	if (!key) {
 		*value = plist_copy(client->info);
 		return RESTORE_E_SUCCESS;
 	} else {
 		item = plist_dict_get_item(client->info, key);
 	}
-	
+
 	if (item) {
 		*value = plist_copy(item);
 	} else {
 		ret = RESTORE_E_PLIST_ERROR;
 	}
-	
+
 	return ret;
 }
 
-restored_error_t restored_client_new(idevice_t device, restored_client_t *client, const char *label)
+LIBIMOBILEDEVICE_API restored_error_t restored_client_new(idevice_t device, restored_client_t *client, const char *label)
 {
 	if (!client)
 		return RESTORE_E_INVALID_ARG;
 
 	restored_error_t ret = RESTORE_E_SUCCESS;
+	idevice_error_t idev_ret;
 
 	static struct lockdownd_service_descriptor service = {
 		.port = 0xf27e,
@@ -317,9 +318,10 @@ restored_error_t restored_client_new(idevice_t device, restored_client_t *client
 	if (label != NULL)
 		client_loc->label = strdup(label);
 
-	ret = idevice_get_udid(device, &client_loc->udid);
-	if (RESTORE_E_SUCCESS != ret) {
+	idev_ret = idevice_get_udid(device, &client_loc->udid);
+	if (IDEVICE_E_SUCCESS != idev_ret) {
 		debug_info("failed to get device udid.");
+		ret = RESTORE_E_DEVICE_ERROR;
 	}
 	debug_info("device udid: %s", client_loc->udid);
 
@@ -332,7 +334,7 @@ restored_error_t restored_client_new(idevice_t device, restored_client_t *client
 	return ret;
 }
 
-restored_error_t restored_goodbye(restored_client_t client)
+LIBIMOBILEDEVICE_API restored_error_t restored_goodbye(restored_client_t client)
 {
 	if (!client)
 		return RESTORE_E_INVALID_ARG;
@@ -364,7 +366,7 @@ restored_error_t restored_goodbye(restored_client_t client)
 	return ret;
 }
 
-restored_error_t restored_start_restore(restored_client_t client, plist_t options, uint64_t version)
+LIBIMOBILEDEVICE_API restored_error_t restored_start_restore(restored_client_t client, plist_t options, uint64_t version)
 {
 	if (!client)
 		return RESTORE_E_INVALID_ARG;
@@ -388,7 +390,7 @@ restored_error_t restored_start_restore(restored_client_t client, plist_t option
 	return ret;
 }
 
-restored_error_t restored_reboot(restored_client_t client)
+LIBIMOBILEDEVICE_API restored_error_t restored_reboot(restored_client_t client)
 {
 	if (!client)
 		return RESTORE_E_INVALID_ARG;
@@ -419,4 +421,3 @@ restored_error_t restored_reboot(restored_client_t client)
 	dict = NULL;
 	return ret;
 }
-

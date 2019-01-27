@@ -2,23 +2,27 @@
  * idevicebackup2.c
  * Command line interface to use the device's backup and restore service
  *
+ * Copyright (c) 2010-2018 Nikias Bassen All Rights Reserved.
  * Copyright (c) 2009-2010 Martin Szulecki All Rights Reserved.
- * Copyright (c) 2010      Nikias Bassen All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +40,9 @@
 #include <libimobiledevice/mobilebackup2.h>
 #include <libimobiledevice/notification_proxy.h>
 #include <libimobiledevice/afc.h>
+#include <libimobiledevice/installation_proxy.h>
+#include <libimobiledevice/sbservices.h>
+#include "common/utils.h"
 
 #include <endianness.h>
 
@@ -73,14 +80,9 @@ enum cmd_mode {
 	CMD_CLOUD
 };
 
-enum plist_format_t {
-	PLIST_FORMAT_XML,
-	PLIST_FORMAT_BINARY
-};
-
 enum cmd_flags {
 	CMD_FLAG_RESTORE_SYSTEM_FILES       = (1 << 1),
-	CMD_FLAG_RESTORE_REBOOT             = (1 << 2),
+	CMD_FLAG_RESTORE_NO_REBOOT          = (1 << 2),
 	CMD_FLAG_RESTORE_COPY_BACKUP        = (1 << 3),
 	CMD_FLAG_RESTORE_SETTINGS           = (1 << 4),
 	CMD_FLAG_RESTORE_REMOVE_ITEMS       = (1 << 5),
@@ -89,7 +91,8 @@ enum cmd_flags {
 	CMD_FLAG_ENCRYPTION_CHANGEPW        = (1 << 8),
 	CMD_FLAG_FORCE_FULL_BACKUP          = (1 << 9),
 	CMD_FLAG_CLOUD_ENABLE               = (1 << 10),
-	CMD_FLAG_CLOUD_DISABLE              = (1 << 11)
+	CMD_FLAG_CLOUD_DISABLE              = (1 << 11),
+	CMD_FLAG_RESTORE_SKIP_APPS          = (1 << 12)
 };
 
 static int backup_domain_changed = 0;
@@ -146,11 +149,10 @@ static void mobilebackup_afc_get_file_contents(afc_client_t afc, const char *fil
 		uint32_t bread = 0;
 		afc_file_read(afc, f, buf+done, 65536, &bread);
 		if (bread > 0) {
-			
+			done += bread;
 		} else {
 			break;
 		}
-		done += bread;
 	}
 	if (done == fsize) {
 		*size = fsize;
@@ -159,16 +161,6 @@ static void mobilebackup_afc_get_file_contents(afc_client_t afc, const char *fil
 		free(buf);
 	}
 	afc_file_close(afc, f);
-}
-
-static char *str_toupper(char* str)
-{
-	char *res = strdup(str);
-	unsigned int i;
-	for (i = 0; i < strlen(res); i++) {
-		res[i] = toupper(res[i]);
-	}
-	return res;
 }
 
 static int __mkdir(const char* path, int mode)
@@ -186,7 +178,7 @@ static int mkdir_with_parents(const char *dir, int mode)
 	if (__mkdir(dir, mode) == 0) {
 		return 0;
 	} else {
-		if (errno == EEXIST) return 0;	
+		if (errno == EEXIST) return 0;
 	}
 	int res;
 	char *parent = strdup(dir);
@@ -194,7 +186,7 @@ static int mkdir_with_parents(const char *dir, int mode)
 	if (parentdir) {
 		res = mkdir_with_parents(parentdir, mode);
 	} else {
-		res = -1;	
+		res = -1;
 	}
 	free(parent);
 	if (res == 0) {
@@ -203,63 +195,235 @@ static int mkdir_with_parents(const char *dir, int mode)
 	return res;
 }
 
-static char* build_path(const char* elem, ...)
+#ifdef WIN32
+static int win32err_to_errno(int err_value)
 {
-	if (!elem) return NULL;
-	va_list args;
-	int len = strlen(elem)+1;
-	va_start(args, elem);
-	char *arg = va_arg(args, char*);
-	while (arg) {
-		len += strlen(arg)+1;
-		arg = va_arg(args, char*);
+	switch (err_value) {
+		case ERROR_FILE_NOT_FOUND:
+			return ENOENT;
+		case ERROR_ALREADY_EXISTS:
+			return EEXIST;
+		default:
+			return EFAULT;
 	}
-	va_end(args);
+}
+#endif
 
-	char* out = (char*)malloc(len);
-	strcpy(out, elem);
-
-	va_start(args, elem);
-	arg = va_arg(args, char*);
-	while (arg) {
-		strcat(out, "/");
-		strcat(out, arg);
-		arg = va_arg(args, char*);
+static int remove_file(const char* path)
+{
+	int e = 0;
+#ifdef WIN32
+	if (!DeleteFile(path)) {
+		e = win32err_to_errno(GetLastError());
 	}
-	va_end(args);
-	return out;
+#else
+	if (remove(path) < 0) {
+		e = errno;
+	}
+#endif
+	return e;
 }
 
-static char* format_size_for_display(uint64_t size)
+static int remove_directory(const char* path)
 {
-	char buf[32];
-	double sz;
-	if (size >= 1000000000LL) {
-		sz = ((double)size / 1000000000.0f);
-		sprintf(buf, "%0.1f GB", sz);
-	} else if (size >= 1000000LL) {
-		sz = ((double)size / 1000000.0f);
-		sprintf(buf, "%0.1f MB", sz);
-	} else if (size >= 1000LL) {
-		sz = ((double)size / 1000.0f);
-		sprintf(buf, "%0.1f kB", sz);
-	} else {
-		sprintf(buf, "%d Bytes", (int)size);
+	int e = 0;
+#ifdef WIN32
+	if (!RemoveDirectory(path)) {
+		e = win32err_to_errno(GetLastError());
 	}
-	return strdup(buf);
+#else
+	if (remove(path) < 0) {
+		e = errno;
+	}
+#endif
+	return e;
 }
 
-static plist_t mobilebackup_factory_info_plist_new(const char* udid, lockdownd_client_t lockdown, afc_client_t afc)
+struct entry {
+	char *name;
+	struct entry *next;
+};
+
+static void scan_directory(const char *path, struct entry **files, struct entry **directories)
+{
+	DIR* cur_dir = opendir(path);
+	if (cur_dir) {
+		struct dirent* ep;
+		while ((ep = readdir(cur_dir))) {
+			if ((strcmp(ep->d_name, ".") == 0) || (strcmp(ep->d_name, "..") == 0)) {
+				continue;
+			}
+			char *fpath = string_build_path(path, ep->d_name, NULL);
+			if (fpath) {
+#ifdef HAVE_DIRENT_D_TYPE
+				if (ep->d_type & DT_DIR) {
+#else
+				struct stat st;
+				if (stat(fpath, &st) != 0) return;
+				if (S_ISDIR(st.st_mode)) {
+#endif
+					struct entry *ent = malloc(sizeof(struct entry));
+					if (!ent) return;
+					ent->name = fpath;
+					ent->next = *directories;
+					*directories = ent;
+					scan_directory(fpath, files, directories);
+					fpath = NULL;
+				} else {
+					struct entry *ent = malloc(sizeof(struct entry));
+					if (!ent) return;
+					ent->name = fpath;
+					ent->next = *files;
+					*files = ent;
+					fpath = NULL;
+				}
+			}
+		}
+		closedir(cur_dir);
+	}
+}
+
+static int rmdir_recursive(const char* path)
+{
+	int res = 0;
+	struct entry *files = NULL;
+	struct entry *directories = NULL;
+	struct entry *ent;
+
+	ent = malloc(sizeof(struct entry));
+	if (!ent) return ENOMEM;
+	ent->name = strdup(path);
+	ent->next = NULL;
+	directories = ent;
+
+	scan_directory(path, &files, &directories);
+
+	ent = files;
+	while (ent) {
+		struct entry *del = ent;
+		res = remove_file(ent->name);
+		free(ent->name);
+		ent = ent->next;
+		free(del);
+	}
+	ent = directories;
+	while (ent) {
+		struct entry *del = ent;
+		res = remove_directory(ent->name);
+		free(ent->name);
+		ent = ent->next;
+		free(del);
+	}
+
+	return res;
+}
+
+static char* get_uuid()
+{
+	const char *chars = "ABCDEF0123456789";
+	int i = 0;
+	char *uuid = (char*)malloc(sizeof(char) * 33);
+
+	srand(time(NULL));
+
+	for (i = 0; i < 32; i++) {
+		uuid[i] = chars[rand() % 16];
+	}
+
+	uuid[32] = '\0';
+
+	return uuid;
+}
+
+static plist_t mobilebackup_factory_info_plist_new(const char* udid, idevice_t device, afc_client_t afc)
 {
 	/* gather data from lockdown */
 	plist_t value_node = NULL;
 	plist_t root_node = NULL;
+	plist_t itunes_settings = NULL;
+	plist_t min_itunes_version = NULL;
 	char *udid_uppercase = NULL;
+
+	lockdownd_client_t lockdown = NULL;
+	if (lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup2") != LOCKDOWN_E_SUCCESS) {
+		return NULL;
+	}
 
 	plist_t ret = plist_new_dict();
 
 	/* get basic device information in one go */
 	lockdownd_get_value(lockdown, NULL, NULL, &root_node);
+
+	/* get iTunes settings */
+	lockdownd_get_value(lockdown, "com.apple.iTunes", NULL, &itunes_settings);
+
+	/* get minimum iTunes version */
+	lockdownd_get_value(lockdown, "com.apple.mobile.iTunes", "MinITunesVersion", &min_itunes_version);
+
+	lockdownd_client_free(lockdown);
+
+	/* get a list of installed user applications */
+	plist_t app_dict = plist_new_dict();
+	plist_t installed_apps = plist_new_array();
+	instproxy_client_t ip = NULL;
+	if (instproxy_client_start_service(device, &ip, "idevicebackup2") == INSTPROXY_E_SUCCESS) {
+		plist_t client_opts = instproxy_client_options_new();
+		instproxy_client_options_add(client_opts, "ApplicationType", "User", NULL);
+		instproxy_client_options_set_return_attributes(client_opts, "CFBundleIdentifier", "ApplicationSINF", "iTunesMetadata", NULL);
+
+		plist_t apps = NULL;
+		instproxy_browse(ip, client_opts, &apps);
+
+		sbservices_client_t sbs = NULL;
+		if (sbservices_client_start_service(device, &sbs, "idevicebackup2") != SBSERVICES_E_SUCCESS) {
+			printf("Couldn't establish sbservices connection. Continuing anyway.\n");
+		}
+
+		if (apps && (plist_get_node_type(apps) == PLIST_ARRAY)) {
+			uint32_t app_count = plist_array_get_size(apps);
+			uint32_t i;
+			for (i = 0; i < app_count; i++) {
+				plist_t app_entry = plist_array_get_item(apps, i);
+				plist_t bundle_id = plist_dict_get_item(app_entry, "CFBundleIdentifier");
+				if (bundle_id) {
+					char *bundle_id_str = NULL;
+					plist_array_append_item(installed_apps, plist_copy(bundle_id));
+
+					plist_get_string_val(bundle_id, &bundle_id_str);
+					plist_t sinf = plist_dict_get_item(app_entry, "ApplicationSINF");
+					plist_t meta = plist_dict_get_item(app_entry, "iTunesMetadata");
+					if (sinf && meta) {
+						plist_t adict = plist_new_dict();
+						plist_dict_set_item(adict, "ApplicationSINF", plist_copy(sinf));
+						if (sbs) {
+							char *pngdata = NULL;
+							uint64_t pngsize = 0;
+							sbservices_get_icon_pngdata(sbs, bundle_id_str, &pngdata, &pngsize);
+							if (pngdata) {
+								plist_dict_set_item(adict, "PlaceholderIcon", plist_new_data(pngdata, pngsize));
+								free(pngdata);
+							}
+						}
+						plist_dict_set_item(adict, "iTunesMetadata", plist_copy(meta));
+						plist_dict_set_item(app_dict, bundle_id_str, adict);
+					}
+					free(bundle_id_str);
+				}
+			}
+		}
+		plist_free(apps);
+
+		if (sbs) {
+			sbservices_client_free(sbs);
+		}
+
+		instproxy_client_options_free(client_opts);
+
+		instproxy_client_free(ip);
+	}
+
+	/* Applications */
+	plist_dict_set_item(ret, "Applications", app_dict);
 
 	/* set fields we understand */
 	value_node = plist_dict_get_item(root_node, "BuildVersion");
@@ -269,8 +433,9 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, lockdownd_c
 	plist_dict_set_item(ret, "Device Name", plist_copy(value_node));
 	plist_dict_set_item(ret, "Display Name", plist_copy(value_node));
 
-	/* FIXME: How is the GUID generated? */
-	plist_dict_set_item(ret, "GUID", plist_new_string("---"));
+	char *uuid = get_uuid();
+	plist_dict_set_item(ret, "GUID", plist_new_string(uuid));
+	free(uuid);
 
 	value_node = plist_dict_get_item(root_node, "IntegratedCircuitCardIdentity");
 	if (value_node)
@@ -280,12 +445,21 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, lockdownd_c
 	if (value_node)
 		plist_dict_set_item(ret, "IMEI", plist_copy(value_node));
 
-	plist_dict_set_item(ret, "Last Backup Date", plist_new_date(time(NULL), 0));
+	/* Installed Applications */
+	plist_dict_set_item(ret, "Installed Applications", installed_apps);
+
+	plist_dict_set_item(ret, "Last Backup Date", plist_new_date(time(NULL) - MAC_EPOCH, 0));
+
+	value_node = plist_dict_get_item(root_node, "MobileEquipmentIdentifier");
+	if (value_node)
+		plist_dict_set_item(ret, "MEID", plist_copy(value_node));
 
 	value_node = plist_dict_get_item(root_node, "PhoneNumber");
 	if (value_node && (plist_get_node_type(value_node) == PLIST_STRING)) {
 		plist_dict_set_item(ret, "Phone Number", plist_copy(value_node));
 	}
+
+	/* FIXME Product Name */
 
 	value_node = plist_dict_get_item(root_node, "ProductType");
 	plist_dict_set_item(ret, "Product Type", plist_copy(value_node));
@@ -304,7 +478,7 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, lockdownd_c
 	plist_dict_set_item(ret, "Target Type", plist_new_string("Device"));
 
 	/* uppercase */
-	udid_uppercase = str_toupper((char*)udid);
+	udid_uppercase = string_toupper((char*)udid);
 	plist_dict_set_item(ret, "Unique Identifier", plist_new_string(udid_uppercase));
 	free(udid_uppercase);
 
@@ -324,6 +498,7 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, lockdownd_c
 		"PhotosFolderAlbums",
 		"PhotosFolderName",
 		"PhotosFolderPrefs",
+		"VoiceMemos.plist",
 		"iPhotoAlbumPrefs",
 		"iTunesApplicationIDs",
 		"iTunesPrefs",
@@ -346,109 +521,82 @@ static plist_t mobilebackup_factory_info_plist_new(const char* udid, lockdownd_c
 	}
 	plist_dict_set_item(ret, "iTunes Files", files);
 
-	plist_t itunes_settings = NULL;
-	lockdownd_get_value(lockdown, "com.apple.iTunes", NULL, &itunes_settings);
-	plist_dict_set_item(ret, "iTunes Settings", itunes_settings ? itunes_settings : plist_new_dict());
+	plist_dict_set_item(ret, "iTunes Settings", itunes_settings ? plist_copy(itunes_settings) : plist_new_dict());
 
-	plist_dict_set_item(ret, "iTunes Version", plist_new_string("10.0.1"));
+	/* since we usually don't have iTunes, let's get the minimum required iTunes version from the device */
+	if (min_itunes_version) {
+		plist_dict_set_item(ret, "iTunes Version", plist_copy(min_itunes_version));
+	} else {
+		plist_dict_set_item(ret, "iTunes Version", plist_new_string("10.0.1"));
+	}
 
+	plist_free(itunes_settings);
+	plist_free(min_itunes_version);
 	plist_free(root_node);
 
 	return ret;
 }
 
-static void buffer_read_from_filename(const char *filename, char **buffer, uint64_t *length)
+static int write_restore_applications(plist_t info_plist, afc_client_t afc)
 {
-	FILE *f;
-	uint64_t size;
+	int res = -1;
+	uint64_t restore_applications_file = 0;
+	char * applications_plist_xml = NULL;
+	uint32_t applications_plist_xml_length = 0;
 
-	*length = 0;
-
-	f = fopen(filename, "rb");
-	if (!f) {
-		return;
+	plist_t applications_plist = plist_dict_get_item(info_plist, "Applications");
+	if (applications_plist) {
+		plist_to_xml(applications_plist, &applications_plist_xml, &applications_plist_xml_length);
+	}
+	if (!applications_plist_xml) {
+		printf("Error preparing RestoreApplications.plist\n");
+		goto leave;
 	}
 
-	fseek(f, 0, SEEK_END);
-	size = ftell(f);
-	rewind(f);
-
-	if (size == 0) {
-		return;
+	afc_error_t afc_err = 0;
+	afc_err = afc_make_directory(afc, "/iTunesRestore");
+	if (afc_err != AFC_E_SUCCESS) {
+		printf("Error creating directory /iTunesRestore, error code %d\n", afc_err);
+		goto leave;
 	}
 
-	*buffer = (char*)malloc(sizeof(char)*size);
-	fread(*buffer, sizeof(char), size, f);
-	fclose(f);
-
-	*length = size;
-}
-
-static void buffer_write_to_filename(const char *filename, const char *buffer, uint64_t length)
-{
-	FILE *f;
-
-	f = fopen(filename, "ab");
-	if (!f)
-		f = fopen(filename, "wb");
-	if (f) {
-		fwrite(buffer, sizeof(char), length, f);
-		fclose(f);
-	}
-}
-
-static int plist_read_from_filename(plist_t *plist, const char *filename)
-{
-	char *buffer = NULL;
-	uint64_t length;
-
-	if (!filename)
-		return 0;
-
-	buffer_read_from_filename(filename, &buffer, &length);
-
-	if (!buffer) {
-		return 0;
+	afc_err = afc_file_open(afc, "/iTunesRestore/RestoreApplications.plist", AFC_FOPEN_WR, &restore_applications_file);
+	if (afc_err != AFC_E_SUCCESS  || !restore_applications_file) {
+		printf("Error creating /iTunesRestore/RestoreApplications.plist, error code %d\n", afc_err);
+		goto leave;
 	}
 
-	if ((length > 8) && (memcmp(buffer, "bplist00", 8) == 0)) {
-		plist_from_bin(buffer, length, plist);
-	} else {
-		plist_from_xml(buffer, length, plist);
+	uint32_t bytes_written = 0;
+	afc_err = afc_file_write(afc, restore_applications_file, applications_plist_xml, applications_plist_xml_length, &bytes_written);
+	if (afc_err != AFC_E_SUCCESS  || bytes_written != applications_plist_xml_length) {
+		printf("Error writing /iTunesRestore/RestoreApplications.plist, error code %d, wrote %u of %u bytes\n", afc_err, bytes_written, applications_plist_xml_length);
+		goto leave;
 	}
 
-	free(buffer);
+	afc_err = afc_file_close(afc, restore_applications_file);
+	restore_applications_file = 0;
+	if (afc_err != AFC_E_SUCCESS) {
+		goto leave;
+	}
+	/* success */
+	res = 0;
 
-	return 1;
-}
+leave:
+	free(applications_plist_xml);
 
-static int plist_write_to_filename(plist_t plist, const char *filename, enum plist_format_t format)
-{
-	char *buffer = NULL;
-	uint32_t length;
+	if (restore_applications_file) {
+		afc_file_close(afc, restore_applications_file);
+		restore_applications_file = 0;
+	}
 
-	if (!plist || !filename)
-		return 0;
-
-	if (format == PLIST_FORMAT_XML)
-		plist_to_xml(plist, &buffer, &length);
-	else if (format == PLIST_FORMAT_BINARY)
-		plist_to_bin(plist, &buffer, &length);
-	else
-		return 0;
-
-	buffer_write_to_filename(filename, buffer, length);
-
-	free(buffer);
-
-	return 1;
+	return res;
 }
 
 static int mb2_status_check_snapshot_state(const char *path, const char *udid, const char *matches)
 {
-	int ret = -1;
+	int ret = 0;
 	plist_t status_plist = NULL;
-	char *file_path = build_path(path, udid, "Status.plist", NULL);
+	char *file_path = string_build_path(path, udid, "Status.plist", NULL);
 
 	plist_read_from_filename(&status_plist, file_path);
 	free(file_path);
@@ -478,7 +626,7 @@ static void do_post_notification(idevice_t device, const char *notification)
 
 	lockdownd_client_t lockdown = NULL;
 
-	if (lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup") != LOCKDOWN_E_SUCCESS) {
+	if (lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup2") != LOCKDOWN_E_SUCCESS) {
 		return;
 	}
 
@@ -532,10 +680,10 @@ static void print_progress(uint64_t current, uint64_t total)
 
 	print_progress_real((double)progress, 0);
 
-	format_size = format_size_for_display(current);
+	format_size = string_format_size(current);
 	PRINT_VERBOSE(1, " (%s", format_size);
 	free(format_size);
-	format_size = format_size_for_display(total);
+	format_size = string_format_size(total);
 	PRINT_VERBOSE(1, "/%s)     ", format_size);
 	free(format_size);
 
@@ -594,26 +742,12 @@ static int errno_to_device_error(int errno_value)
 	}
 }
 
-#ifdef WIN32
-static int win32err_to_errno(int err_value)
-{
-	switch (err_value) {
-		case ERROR_FILE_NOT_FOUND:
-			return ENOENT;
-		case ERROR_ALREADY_EXISTS:
-			return EEXIST;
-		default:
-			return EFAULT;
-	}
-}
-#endif
-
 static int mb2_handle_send_file(mobilebackup2_client_t mobilebackup2, const char *backup_dir, const char *path, plist_t *errplist)
 {
 	uint32_t nlen = 0;
 	uint32_t pathlen = strlen(path);
 	uint32_t bytes = 0;
-	char *localfile = build_path(backup_dir, path, NULL);
+	char *localfile = string_build_path(backup_dir, path, NULL);
 	char buf[32768];
 #ifdef WIN32
 	struct _stati64 fst;
@@ -671,7 +805,7 @@ static int mb2_handle_send_file(mobilebackup2_client_t mobilebackup2, const char
 
 	total = fst.st_size;
 
-	char *format_size = format_size_for_display(total);
+	char *format_size = string_format_size(total);
 	PRINT_VERBOSE(1, "Sending '%s' (%s)\n", path, format_size);
 	free(format_size);
 
@@ -737,7 +871,7 @@ leave:
 		}
 		char *errdesc = strerror(errcode);
 		mb2_multi_status_add_file_error(*errplist, path, errno_to_device_error(errcode), errdesc);
-		
+
 		length = strlen(errdesc);
 		nlen = htobe32(length+1);
 		memcpy(buf, &nlen, 4);
@@ -763,7 +897,7 @@ leave_proto_err:
 
 static void mb2_handle_send_files(mobilebackup2_client_t mobilebackup2, plist_t message, const char *backup_dir)
 {
-	uint32_t cnt; 
+	uint32_t cnt;
 	uint32_t i = 0;
 	uint32_t sent;
 	plist_t errplist = NULL;
@@ -772,7 +906,6 @@ static void mb2_handle_send_files(mobilebackup2_client_t mobilebackup2, plist_t 
 
 	plist_t files = plist_array_get_item(message, 1);
 	cnt = plist_array_get_size(files);
-	if (cnt == 0) return;
 
 	for (i = 0; i < cnt; i++) {
 		plist_t val = plist_array_get_item(files, i);
@@ -901,7 +1034,7 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 			bname = NULL;
 		}
 
-		bname = build_path(backup_dir, fname, NULL);
+		bname = string_build_path(backup_dir, fname, NULL);
 
 		if (fname != NULL) {
 			free(fname);
@@ -931,7 +1064,7 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 			PRINT_VERBOSE(1, "Found new flag %02x\n", code);
 		}
 
-		remove(bname);
+		remove_file(bname);
 		f = fopen(bname, "wb");
 		while (f && (code == CODE_FILE_DATA)) {
 			blocksize = nlen-1;
@@ -1001,7 +1134,7 @@ static int mb2_handle_receive_files(mobilebackup2_client_t mobilebackup2, plist_
 		fname = (char*)malloc(nlen-1);
 		mobilebackup2_receive_raw(mobilebackup2, fname, nlen-1, &r);
 		free(fname);
-		remove(bname);
+		remove_file(bname);
 	}
 
 	/* clean up */
@@ -1034,7 +1167,7 @@ static void mb2_handle_list_directory(mobilebackup2_client_t mobilebackup2, plis
 		return;
 	}
 
-	char *path = build_path(backup_dir, str, NULL);
+	char *path = string_build_path(backup_dir, str, NULL);
 	free(str);
 
 	plist_t dirlist = plist_new_dict();
@@ -1046,7 +1179,7 @@ static void mb2_handle_list_directory(mobilebackup2_client_t mobilebackup2, plis
 			if ((strcmp(ep->d_name, ".") == 0) || (strcmp(ep->d_name, "..") == 0)) {
 				continue;
 			}
-			char *fpath = build_path(path, ep->d_name, NULL);
+			char *fpath = string_build_path(path, ep->d_name, NULL);
 			if (fpath) {
 				plist_t fdict = plist_new_dict();
 				struct stat st;
@@ -1059,7 +1192,8 @@ static void mb2_handle_list_directory(mobilebackup2_client_t mobilebackup2, plis
 				}
 				plist_dict_set_item(fdict, "DLFileType", plist_new_string(ftype));
 				plist_dict_set_item(fdict, "DLFileSize", plist_new_uint(st.st_size));
-				plist_dict_set_item(fdict, "DLFileModificationDate", plist_new_date(st.st_mtime, 0));
+				plist_dict_set_item(fdict, "DLFileModificationDate",
+						    plist_new_date(st.st_mtime - MAC_EPOCH, 0));
 
 				plist_dict_set_item(dirlist, ep->d_name, fdict);
 				free(fpath);
@@ -1087,7 +1221,7 @@ static void mb2_handle_make_directory(mobilebackup2_client_t mobilebackup2, plis
 	char *errdesc = NULL;
 	plist_get_string_val(dir, &str);
 
-	char *newpath = build_path(backup_dir, str, NULL);
+	char *newpath = string_build_path(backup_dir, str, NULL);
 	free(str);
 
 	if (mkdir_with_parents(newpath, 0755) < 0) {
@@ -1119,6 +1253,7 @@ static void mb2_copy_file_by_path(const char *src, const char *dst)
 	/* open destination file */
 	if ((to = fopen(dst, "wb")) == NULL) {
 		printf("Cannot open destination file '%s'.\n", dst);
+		fclose(from);
 		return;
 	}
 
@@ -1167,15 +1302,17 @@ static void mb2_copy_directory_by_path(const char *src, const char *dst)
 			if ((strcmp(ep->d_name, ".") == 0) || (strcmp(ep->d_name, "..") == 0)) {
 				continue;
 			}
-			char *srcpath = build_path(src, ep->d_name, NULL);
-			char *dstpath = build_path(dst, ep->d_name, NULL);
+			char *srcpath = string_build_path(src, ep->d_name, NULL);
+			char *dstpath = string_build_path(dst, ep->d_name, NULL);
 			if (srcpath && dstpath) {
 				/* copy file */
 				mb2_copy_file_by_path(srcpath, dstpath);
-
-				free(srcpath);
-				free(dstpath);
 			}
+
+			if (srcpath)
+				free(srcpath);
+			if (dstpath)
+				free(dstpath);
 		}
 		closedir(cur_dir);
 	}
@@ -1186,7 +1323,7 @@ static void mb2_copy_directory_by_path(const char *src, const char *dst)
 #define my_getch getch
 #else
 #define BS_CC 0x7f
-static int my_getch()
+static int my_getch(void)
 {
 	struct termios oldt, newt;
 	int ch;
@@ -1225,15 +1362,15 @@ static void get_hidden_input(char *buf, int maxlen)
 static char* ask_for_password(const char* msg, int type_again)
 {
 	char pwbuf[256];
-	
+
 	fprintf(stderr, "%s: ", msg);
 	fflush(stderr);
 	get_hidden_input(pwbuf, 256);
 	fputc('\n', stderr);
-	
+
 	if (type_again) {
 		char pwrep[256];
-		
+
 		fprintf(stderr, "%s (repeat): ", msg);
 		fflush(stderr);
 		get_hidden_input(pwrep, 256);
@@ -1267,10 +1404,11 @@ static void print_usage(int argc, char **argv)
 	printf("    --full\t\tforce full backup from device.\n");
 	printf("  restore\trestore last backup to the device\n");
 	printf("    --system\t\trestore system files, too.\n");
-	printf("    --reboot\t\treboot the system when done.\n");
+	printf("    --no-reboot\t\tdo NOT reboot the system when done (default: yes).\n");
 	printf("    --copy\t\tcreate a copy of backup folder before restoring.\n");
 	printf("    --settings\t\trestore device settings from the backup.\n");
 	printf("    --remove\t\tremove items which are not being restored\n");
+	printf("    --skip-apps\t\tdo not trigger re-installation of apps after restore\n");
 	printf("    --password PWD\tsupply the password of the source backup\n");
 	printf("  info\t\tshow details about last completed backup of device\n");
 	printf("  list\t\tlist files of last completed backup in CSV format\n");
@@ -1283,16 +1421,18 @@ static void print_usage(int argc, char **argv)
 	printf("\n");
 	printf("options:\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -s, --source UDID\tuse backup data from device specified by UDID\n");
 	printf("  -i, --interactive\trequest passwords interactively\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }
 
 int main(int argc, char *argv[])
 {
 	idevice_error_t ret = IDEVICE_E_UNKNOWN_ERROR;
+	lockdownd_error_t ldret = LOCKDOWN_E_UNKNOWN_ERROR;
 	int i;
 	char* udid = NULL;
 	char* source_udid = NULL;
@@ -1314,7 +1454,7 @@ int main(int argc, char *argv[])
 	/* we need to exit cleanly on running backups and restores or we cause havok */
 	signal(SIGINT, clean_exit);
 	signal(SIGTERM, clean_exit);
-#ifndef WIN32	
+#ifndef WIN32
 	signal(SIGQUIT, clean_exit);
 	signal(SIGPIPE, SIG_IGN);
 #endif
@@ -1327,7 +1467,7 @@ int main(int argc, char *argv[])
 		}
 		else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--udid")) {
 			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
+			if (!argv[i] || !*argv[i]) {
 				print_usage(argc, argv);
 				return -1;
 			}
@@ -1336,7 +1476,7 @@ int main(int argc, char *argv[])
 		}
 		else if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--source")) {
 			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
+			if (!argv[i] || !*argv[i]) {
 				print_usage(argc, argv);
 				return -1;
 			}
@@ -1361,7 +1501,10 @@ int main(int argc, char *argv[])
 			cmd_flags |= CMD_FLAG_RESTORE_SYSTEM_FILES;
 		}
 		else if (!strcmp(argv[i], "--reboot")) {
-			cmd_flags |= CMD_FLAG_RESTORE_REBOOT;
+			cmd_flags &= ~CMD_FLAG_RESTORE_NO_REBOOT;
+		}
+		else if (!strcmp(argv[i], "--no-reboot")) {
+			cmd_flags |= CMD_FLAG_RESTORE_NO_REBOOT;
 		}
 		else if (!strcmp(argv[i], "--copy")) {
 			cmd_flags |= CMD_FLAG_RESTORE_COPY_BACKUP;
@@ -1371,6 +1514,9 @@ int main(int argc, char *argv[])
 		}
 		else if (!strcmp(argv[i], "--remove")) {
 			cmd_flags |= CMD_FLAG_RESTORE_REMOVE_ITEMS;
+		}
+		else if (!strcmp(argv[i], "--skip-apps")) {
+			cmd_flags |= CMD_FLAG_RESTORE_SKIP_APPS;
 		}
 		else if (!strcmp(argv[i], "--password")) {
 			i++;
@@ -1420,7 +1566,7 @@ int main(int argc, char *argv[])
 			if (!argv[i]) {
 				printf("No argument given for encryption command; requires either 'on' or 'off'.\n");
 				print_usage(argc, argv);
-				return -1;	
+				return -1;
 			}
 			if (!strcmp(argv[i], "on")) {
 				cmd_flags |= CMD_FLAG_ENCRYPTION_ENABLE;
@@ -1437,7 +1583,7 @@ int main(int argc, char *argv[])
 			if (backup_password) {
 				free(backup_password);
 				backup_password = NULL;
-			}	
+			}
 			i++;
 			if (argv[i]) {
 				if (cmd_flags & CMD_FLAG_ENCRYPTION_ENABLE) {
@@ -1450,7 +1596,7 @@ int main(int argc, char *argv[])
 		}
 		else if (!strcmp(argv[i], "changepw")) {
 			cmd = CMD_CHANGEPW;
-			cmd_flags |= CMD_FLAG_ENCRYPTION_CHANGEPW;	
+			cmd_flags |= CMD_FLAG_ENCRYPTION_CHANGEPW;
 			// check if passwords were given on command line
 			if (newpw) {
 				free(newpw);
@@ -1459,7 +1605,7 @@ int main(int argc, char *argv[])
 			if (backup_password) {
 				free(backup_password);
 				backup_password = NULL;
-			}		
+			}
 			i++;
 			if (argv[i]) {
 				backup_password = strdup(argv[i]);
@@ -1528,7 +1674,7 @@ int main(int argc, char *argv[])
 	}
 
 	uint8_t is_encrypted = 0;
-	char *info_path = NULL; 
+	char *info_path = NULL;
 	if (cmd == CMD_CHANGEPW) {
 		if (!interactive_mode && !backup_password && !newpw) {
 			idevice_free(device);
@@ -1537,7 +1683,7 @@ int main(int argc, char *argv[])
 		}
 	} else if (cmd != CMD_CLOUD) {
 		/* backup directory must contain an Info.plist */
-		info_path = build_path(backup_directory, source_udid, "Info.plist", NULL);
+		info_path = string_build_path(backup_directory, source_udid, "Info.plist", NULL);
 		if (cmd == CMD_RESTORE || cmd == CMD_UNBACK) {
 			if (stat(info_path, &st) != 0) {
 				idevice_free(device);
@@ -1545,7 +1691,7 @@ int main(int argc, char *argv[])
 				printf("ERROR: Backup directory \"%s\" is invalid. No Info.plist found for UDID %s.\n", backup_directory, source_udid);
 				return -1;
 			}
-			char* manifest_path = build_path(backup_directory, source_udid, "Manifest.plist", NULL);
+			char* manifest_path = string_build_path(backup_directory, source_udid, "Manifest.plist", NULL);
 			if (stat(manifest_path, &st) != 0) {
 				free(info_path);
 			}
@@ -1590,15 +1736,27 @@ int main(int argc, char *argv[])
 	}
 
 	lockdownd_client_t lockdown = NULL;
-	if (LOCKDOWN_E_SUCCESS != lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup")) {
+	if (LOCKDOWN_E_SUCCESS != (ldret = lockdownd_client_new_with_handshake(device, &lockdown, "idevicebackup2"))) {
+		printf("ERROR: Could not connect to lockdownd, error code %d\n", ldret);
 		idevice_free(device);
 		return -1;
 	}
 
+	uint8_t willEncrypt = 0;
+	node_tmp = NULL;
+	lockdownd_get_value(lockdown, "com.apple.mobile.backup", "WillEncrypt", &node_tmp);
+	if (node_tmp) {
+		if (plist_get_node_type(node_tmp) == PLIST_BOOLEAN) {
+			plist_get_bool_val(node_tmp, &willEncrypt);
+		}
+		plist_free(node_tmp);
+		node_tmp = NULL;
+	}
+
 	/* start notification_proxy */
 	np_client_t np = NULL;
-	ret = lockdownd_start_service(lockdown, NP_SERVICE_NAME, &service);
-	if ((ret == LOCKDOWN_E_SUCCESS) && service && service->port) {
+	ldret = lockdownd_start_service(lockdown, NP_SERVICE_NAME, &service);
+	if ((ldret == LOCKDOWN_E_SUCCESS) && service && service->port) {
 		np_client_new(device, service, &np);
 		np_set_notify_callback(np, notify_cb, NULL);
 		const char *noties[5] = {
@@ -1614,12 +1772,12 @@ int main(int argc, char *argv[])
 	}
 
 	afc_client_t afc = NULL;
-	if (cmd == CMD_BACKUP) {
+	if (cmd == CMD_BACKUP || cmd == CMD_RESTORE) {
 		/* start AFC, we need this for the lock file */
 		service->port = 0;
 		service->ssl_enabled = 0;
-		ret = lockdownd_start_service(lockdown, "com.apple.afc", &service);
-		if ((ret == LOCKDOWN_E_SUCCESS) && service->port) {
+		ldret = lockdownd_start_service(lockdown, AFC_SERVICE_NAME, &service);
+		if ((ldret == LOCKDOWN_E_SUCCESS) && service->port) {
 			afc_client_new(device, service, &afc);
 		}
 	}
@@ -1631,8 +1789,10 @@ int main(int argc, char *argv[])
 
 	/* start mobilebackup service and retrieve port */
 	mobilebackup2_client_t mobilebackup2 = NULL;
-	ret = lockdownd_start_service(lockdown, MOBILEBACKUP2_SERVICE_NAME, &service);
-	if ((ret == LOCKDOWN_E_SUCCESS) && service && service->port) {
+	ldret = lockdownd_start_service_with_escrow_bag(lockdown, MOBILEBACKUP2_SERVICE_NAME, &service);
+	lockdownd_client_free(lockdown);
+	lockdown = NULL;
+	if ((ldret == LOCKDOWN_E_SUCCESS) && service && service->port) {
 		PRINT_VERBOSE(1, "Started \"%s\" service on port %d.\n", MOBILEBACKUP2_SERVICE_NAME, service->port);
 		mobilebackup2_client_new(device, service, &mobilebackup2);
 
@@ -1679,7 +1839,7 @@ int main(int argc, char *argv[])
 		}
 
 		uint64_t lockfile = 0;
-		if (cmd == CMD_BACKUP) {
+		if (cmd == CMD_BACKUP || cmd == CMD_RESTORE) {
 			do_post_notification(device, NP_SYNC_WILL_START);
 			afc_file_open(afc, "/com.apple.itunes.lock_sync", AFC_FOPEN_RW, &lockfile);
 		}
@@ -1708,16 +1868,6 @@ int main(int argc, char *argv[])
 				cmd = CMD_LEAVE;
 			}
 		}
-		uint8_t willEncrypt = 0;
-		node_tmp = NULL;
-		lockdownd_get_value(lockdown, "com.apple.mobile.backup", "WillEncrypt", &node_tmp);
-		if (node_tmp) {
-			if (plist_get_node_type(node_tmp) == PLIST_BOOLEAN) {
-				plist_get_bool_val(node_tmp, &willEncrypt);
-			}
-			plist_free(node_tmp);
-			node_tmp = NULL;
-		}
 
 checkpoint:
 
@@ -1737,32 +1887,36 @@ checkpoint:
 			PRINT_VERBOSE(1, "Starting backup...\n");
 
 			/* make sure backup device sub-directory exists */
-			char* devbackupdir = build_path(backup_directory, source_udid, NULL);
+			char* devbackupdir = string_build_path(backup_directory, source_udid, NULL);
 			__mkdir(devbackupdir, 0755);
 			free(devbackupdir);
 
 			if (strcmp(source_udid, udid) != 0) {
 				/* handle different source backup directory */
 				// make sure target backup device sub-directory exists
-				devbackupdir = build_path(backup_directory, udid, NULL);
+				devbackupdir = string_build_path(backup_directory, udid, NULL);
 				__mkdir(devbackupdir, 0755);
 				free(devbackupdir);
 
 				// use Info.plist path in target backup folder */
 				free(info_path);
-				info_path = build_path(backup_directory, udid, "Info.plist", NULL);
+				info_path = string_build_path(backup_directory, udid, "Info.plist", NULL);
 			}
 
 			/* TODO: check domain com.apple.mobile.backup key RequiresEncrypt and WillEncrypt with lockdown */
-			/* TODO: verify battery on AC enough battery remaining */	
+			/* TODO: verify battery on AC enough battery remaining */
 
 			/* re-create Info.plist (Device infos, IC-Info.sidb, photos, app_ids, iTunesPrefs) */
 			if (info_plist) {
 				plist_free(info_plist);
 				info_plist = NULL;
 			}
-			info_plist = mobilebackup_factory_info_plist_new(udid, lockdown, afc);
-			remove(info_path);
+			info_plist = mobilebackup_factory_info_plist_new(udid, device, afc);
+			if (!info_plist) {
+				fprintf(stderr, "Failed to generate Info.plist - aborting\n");
+				cmd = CMD_LEAVE;
+			}
+			remove_file(info_path);
 			plist_write_to_filename(info_plist, info_path, PLIST_FORMAT_XML);
 			free(info_path);
 
@@ -1816,9 +1970,9 @@ checkpoint:
 			opts = plist_new_dict();
 			plist_dict_set_item(opts, "RestoreSystemFiles", plist_new_bool(cmd_flags & CMD_FLAG_RESTORE_SYSTEM_FILES));
 			PRINT_VERBOSE(1, "Restoring system files: %s\n", (cmd_flags & CMD_FLAG_RESTORE_SYSTEM_FILES ? "Yes":"No"));
-			if ((cmd_flags & CMD_FLAG_RESTORE_REBOOT) == 0)
+			if (cmd_flags & CMD_FLAG_RESTORE_NO_REBOOT)
 				plist_dict_set_item(opts, "RestoreShouldReboot", plist_new_bool(0));
-			PRINT_VERBOSE(1, "Rebooting after restore: %s\n", (cmd_flags & CMD_FLAG_RESTORE_REBOOT ? "Yes":"No"));
+			PRINT_VERBOSE(1, "Rebooting after restore: %s\n", (cmd_flags & CMD_FLAG_RESTORE_NO_REBOOT ? "No":"Yes"));
 			if ((cmd_flags & CMD_FLAG_RESTORE_COPY_BACKUP) == 0)
 				plist_dict_set_item(opts, "RestoreDontCopyBackup", plist_new_bool(1));
 			PRINT_VERBOSE(1, "Don't copy backup: %s\n", ((cmd_flags & CMD_FLAG_RESTORE_COPY_BACKUP) == 0 ? "Yes":"No"));
@@ -1832,6 +1986,20 @@ checkpoint:
 			}
 			PRINT_VERBOSE(1, "Backup password: %s\n", (backup_password == NULL ? "No":"Yes"));
 
+			if (cmd_flags & CMD_FLAG_RESTORE_SKIP_APPS) {
+				PRINT_VERBOSE(1, "Not writing RestoreApplications.plist - apps will not be re-installed after restore\n");
+			} else {
+				/* Write /iTunesRestore/RestoreApplications.plist so that the device will start
+				 * restoring applications once the rest of the restore process is finished */
+				if (write_restore_applications(info_plist, afc) < 0) {
+					cmd = CMD_LEAVE;
+					break;
+				} else {
+					PRINT_VERBOSE(1, "Wrote RestoreApplications.plist\n");
+				}
+			}
+
+			/* Start restore */
 			err = mobilebackup2_send_request(mobilebackup2, "Restore", udid, source_udid, opts);
 			plist_free(opts);
 			if (err != MOBILEBACKUP2_E_SUCCESS) {
@@ -1921,7 +2089,7 @@ checkpoint:
 					if (newpw) {
 						free(newpw);
 						newpw = NULL;
-					}	
+					}
 					if (backup_password) {
 						free(backup_password);
 						backup_password = NULL;
@@ -1951,12 +2119,6 @@ checkpoint:
 			break;
 		}
 
-		/* close down the lockdown connection as it is no longer needed */
-		if (lockdown) {
-			lockdownd_client_free(lockdown);
-			lockdown = NULL;
-		}
-
 		if (cmd != CMD_LEAVE) {
 			/* reset operation success status */
 			int operation_ok = 0;
@@ -1966,13 +2128,12 @@ checkpoint:
 			int file_count = 0;
 			int errcode = 0;
 			const char *errdesc = NULL;
+			int progress_finished = 0;
 
 			/* process series of DLMessage* operations */
 			do {
-				if (dlmsg) {
-					free(dlmsg);
-					dlmsg = NULL;
-				}
+				free(dlmsg);
+				dlmsg = NULL;
 				mobilebackup2_receive_message(mobilebackup2, &message, &dlmsg);
 				if (!message || !dlmsg) {
 					PRINT_VERBOSE(1, "Device is not ready yet. Going to try again in 2 seconds...\n");
@@ -2032,18 +2193,14 @@ checkpoint:
 								char *str = NULL;
 								plist_get_string_val(val, &str);
 								if (str) {
-									char *newpath = build_path(backup_directory, str, NULL);
+									char *newpath = string_build_path(backup_directory, str, NULL);
 									free(str);
-									char *oldpath = build_path(backup_directory, key, NULL);
+									char *oldpath = string_build_path(backup_directory, key, NULL);
 
-#ifdef WIN32
 									if ((stat(newpath, &st) == 0) && S_ISDIR(st.st_mode))
-										RemoveDirectory(newpath);
+										rmdir_recursive(newpath);
 									else
-										DeleteFile(newpath);
-#else
-									remove(newpath);
-#endif
+										remove_file(newpath);
 									if (rename(oldpath, newpath) < 0) {
 										printf("Renameing '%s' to '%s' failed: %s (%d)\n", oldpath, newpath, strerror(errno), errno);
 										errcode = errno_to_device_error(errno);
@@ -2090,29 +2247,20 @@ checkpoint:
 										suppress_warning = 1;
 									}
 								}
-								char *newpath = build_path(backup_directory, str, NULL);
+								char *newpath = string_build_path(backup_directory, str, NULL);
 								free(str);
-#ifdef WIN32
 								int res = 0;
-								if ((stat(newpath, &st) == 0) && S_ISDIR(st.st_mode))
-									res = RemoveDirectory(newpath);
-								else
-									res = DeleteFile(newpath);
-								if (!res) {
-									int e = win32err_to_errno(GetLastError());
-									if (!suppress_warning)
-										printf("Could not remove '%s': %s (%d)\n", newpath, strerror(e), e);
-									errcode = errno_to_device_error(e);
-									errdesc = strerror(e);
+								if ((stat(newpath, &st) == 0) && S_ISDIR(st.st_mode)) {
+									res = rmdir_recursive(newpath);
+								} else {
+									res = remove_file(newpath);
 								}
-#else
-								if (remove(newpath) < 0) {
+								if (res != 0 && res != ENOENT) {
 									if (!suppress_warning)
-										printf("Could not remove '%s': %s (%d)\n", newpath, strerror(errno), errno);
-									errcode = errno_to_device_error(errno);
-									errdesc = strerror(errno);
+										printf("Could not remove '%s': %s (%d)\n", newpath, strerror(res), res);
+									errcode = errno_to_device_error(res);
+									errdesc = strerror(res);
 								}
-#endif
 								free(newpath);
 							}
 						}
@@ -2134,8 +2282,8 @@ checkpoint:
 						plist_get_string_val(srcpath, &src);
 						plist_get_string_val(dstpath, &dst);
 						if (src && dst) {
-							char *oldpath = build_path(backup_directory, src, NULL);
-							char *newpath = build_path(backup_directory, dst, NULL);
+							char *oldpath = string_build_path(backup_directory, src, NULL);
+							char *newpath = string_build_path(backup_directory, dst, NULL);
 
 							PRINT_VERBOSE(1, "Copying '%s' to '%s'\n", src, dst);
 
@@ -2202,22 +2350,22 @@ checkpoint:
 						printf("%s", str);
 						free(str);
 					}
-
 					break;
 				}
 
 				/* print status */
-				if (overall_progress > 0) {
+				if ((overall_progress > 0) && !progress_finished) {
+					if (overall_progress >= 100.0f) {
+						progress_finished = 1;
+					}
 					print_progress_real(overall_progress, 0);
 					PRINT_VERBOSE(1, " Finished\n");
 				}
 
 files_out:
-				if (message)
-					plist_free(message);
+				plist_free(message);
 				message = NULL;
-				if (dlmsg)
-					free(dlmsg);
+				free(dlmsg);
 				dlmsg = NULL;
 
 				if (quit_flag > 0) {
@@ -2232,6 +2380,9 @@ files_out:
 					break;
 				}
 			} while (1);
+
+			plist_free(message);
+			free(dlmsg);
 
 			/* report operation status to user */
 			switch (cmd) {
@@ -2279,7 +2430,7 @@ files_out:
 					}
 				} else if (cmd_flags & CMD_FLAG_ENCRYPTION_DISABLE) {
 					if (operation_ok) {
-						PRINT_VERBOSE(1, "Backup encryption has been disabled successfully.\n"); 
+						PRINT_VERBOSE(1, "Backup encryption has been disabled successfully.\n");
 					} else {
 						PRINT_VERBOSE(1, "Could not disable backup encryption.\n");
 					}
@@ -2292,14 +2443,13 @@ files_out:
 				}
 				break;
 				case CMD_RESTORE:
-				if (cmd_flags & CMD_FLAG_RESTORE_REBOOT)
+				if ((cmd_flags & CMD_FLAG_RESTORE_NO_REBOOT) == 0)
 					PRINT_VERBOSE(1, "The device should reboot now.\n");
 				if (operation_ok) {
 					PRINT_VERBOSE(1, "Restore Successful.\n");
 				} else {
 					PRINT_VERBOSE(1, "Restore Failed (Error Code %d).\n", -result_code);
 				}
-				
 				break;
 				case CMD_INFO:
 				case CMD_LIST:
@@ -2319,7 +2469,7 @@ files_out:
 			afc_file_lock(afc, lockfile, AFC_LOCK_UN);
 			afc_file_close(afc, lockfile);
 			lockfile = 0;
-			if (cmd == CMD_BACKUP)
+			if (cmd == CMD_BACKUP || cmd == CMD_RESTORE)
 				do_post_notification(device, NP_SYNC_DID_FINISH);
 		}
 	} else {

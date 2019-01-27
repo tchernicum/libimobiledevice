@@ -9,16 +9,20 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -40,7 +44,7 @@ static void print_error_message(lockdownd_error_t err)
 		case LOCKDOWN_E_INVALID_HOST_ID:
 			printf("ERROR: Device %s is not paired with this host\n", udid);
 			break;
-		case LOCKDOWN_E_PAIRING_DIALOG_PENDING:
+		case LOCKDOWN_E_PAIRING_DIALOG_RESPONSE_PENDING:
 			printf("ERROR: Please accept the trust dialog on the screen of device %s, then attempt to pair again.\n", udid);
 			break;
 		case LOCKDOWN_E_USER_DENIED_PAIRING:
@@ -55,7 +59,7 @@ static void print_error_message(lockdownd_error_t err)
 static void print_usage(int argc, char **argv)
 {
 	char *name = NULL;
-	
+
 	name = strrchr(argv[0], '/');
 	printf("\n%s - Manage host pairings with devices and usbmuxd.\n\n", (name ? name + 1: argv[0]));
 	printf("Usage: %s [OPTIONS] COMMAND\n\n", (name ? name + 1: argv[0]));
@@ -68,17 +72,18 @@ static void print_usage(int argc, char **argv)
 	printf("  list         list devices paired with this host\n\n");
 	printf(" The following OPTIONS are accepted:\n");
 	printf("  -d, --debug      enable communication debugging\n");
-	printf("  -u, --udid UDID  target specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID  target specific device by UDID\n");
 	printf("  -h, --help       prints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }
 
 static void parse_opts(int argc, char **argv)
 {
 	static struct option longopts[] = {
-		{"help", 0, NULL, 'h'},
-		{"udid", 1, NULL, 'u'},
-		{"debug", 0, NULL, 'd'},
+		{"help", no_argument, NULL, 'h'},
+		{"udid", required_argument, NULL, 'u'},
+		{"debug", no_argument, NULL, 'd'},
 		{NULL, 0, NULL, 0}
 	};
 	int c;
@@ -94,11 +99,13 @@ static void parse_opts(int argc, char **argv)
 			print_usage(argc, argv);
 			exit(EXIT_SUCCESS);
 		case 'u':
-			if (strlen(optarg) != 40) {
-				printf("%s: invalid UDID specified (length != 40)\n", argv[0]);
+			if (!*optarg) {
+				fprintf(stderr, "ERROR: UDID must not be empty!\n");
 				print_usage(argc, argv);
 				exit(2);
 			}
+			if (udid)
+				free(udid);
 			udid = strdup(optarg);
 			break;
 		case 'd':
@@ -226,7 +233,7 @@ int main(int argc, char **argv)
 	lerr = lockdownd_client_new(device, &client, "idevicepair");
 	if (lerr != LOCKDOWN_E_SUCCESS) {
 		idevice_free(device);
-		printf("ERROR: lockdownd_client_new failed with error code %d\n", lerr);
+		printf("ERROR: Could not connect to lockdownd, error code %d\n", lerr);
 		return EXIT_FAILURE;
 	}
 

@@ -1,22 +1,22 @@
- /* 
+/*
  * file_relay.c
  * com.apple.mobile.file_relay service implementation.
- * 
+ *
  * Copyright (c) 2010 Nikias Bassen, All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include <string.h>
 #include <stdlib.h>
@@ -24,7 +24,7 @@
 #include "property_list_service.h"
 #include "common/debug.h"
 
-file_relay_error_t file_relay_client_new(idevice_t device, lockdownd_service_descriptor_t service, file_relay_client_t *client)
+LIBIMOBILEDEVICE_API file_relay_error_t file_relay_client_new(idevice_t device, lockdownd_service_descriptor_t service, file_relay_client_t *client)
 {
 	if (!device || !service || service->port == 0 || !client || *client) {
 		return FILE_RELAY_E_INVALID_ARG;
@@ -44,14 +44,14 @@ file_relay_error_t file_relay_client_new(idevice_t device, lockdownd_service_des
 	return FILE_RELAY_E_SUCCESS;
 }
 
-file_relay_error_t file_relay_client_start_service(idevice_t device, file_relay_client_t * client, const char* label)
+LIBIMOBILEDEVICE_API file_relay_error_t file_relay_client_start_service(idevice_t device, file_relay_client_t * client, const char* label)
 {
 	file_relay_error_t err = FILE_RELAY_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, FILE_RELAY_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(file_relay_client_new), &err);
 	return err;
 }
 
-file_relay_error_t file_relay_client_free(file_relay_client_t client)
+LIBIMOBILEDEVICE_API file_relay_error_t file_relay_client_free(file_relay_client_t client)
 {
 	if (!client)
 		return FILE_RELAY_E_INVALID_ARG;
@@ -59,10 +59,11 @@ file_relay_error_t file_relay_client_free(file_relay_client_t client)
 	if (property_list_service_client_free(client->parent) != PROPERTY_LIST_SERVICE_E_SUCCESS) {
 		return FILE_RELAY_E_UNKNOWN_ERROR;
 	}
+	free(client);
 	return FILE_RELAY_E_SUCCESS;
 }
 
-file_relay_error_t file_relay_request_sources_timeout(file_relay_client_t client, const char **sources, idevice_connection_t *connection, unsigned int timeout)
+LIBIMOBILEDEVICE_API file_relay_error_t file_relay_request_sources_timeout(file_relay_client_t client, const char **sources, idevice_connection_t *connection, unsigned int timeout)
 {
 	if (!client || !client->parent || !sources || !sources[0]) {
 		return FILE_RELAY_E_INVALID_ARG;
@@ -75,7 +76,7 @@ file_relay_error_t file_relay_request_sources_timeout(file_relay_client_t client
 	while (sources[i]) {
 		plist_array_append_item(array, plist_new_string(sources[i]));
 		i++;
-	}	
+	}
 	plist_t dict = plist_new_dict();
 	plist_dict_set_item(dict, "Sources", array);
 
@@ -110,6 +111,9 @@ file_relay_error_t file_relay_request_sources_timeout(file_relay_client_t client
 			} else if (!strcmp(errmsg, "StagingEmpty")) {
 				debug_info("ERROR: StagingEmpty - No data available!");
 				err = FILE_RELAY_E_STAGING_EMPTY;
+			} else if (!strcmp(errmsg, "PermissionDenied")) {
+				debug_info("ERROR: Permission denied.");
+				err = FILE_RELAY_E_PERMISSION_DENIED;
 			} else {
 				debug_info("ERROR: Unknown error '%s'", errmsg);
 			}
@@ -151,7 +155,7 @@ leave:
 	return err;
 }
 
-file_relay_error_t file_relay_request_sources(file_relay_client_t client, const char **sources, idevice_connection_t *connection)
+LIBIMOBILEDEVICE_API file_relay_error_t file_relay_request_sources(file_relay_client_t client, const char **sources, idevice_connection_t *connection)
 {
 	return file_relay_request_sources_timeout(client, sources, connection, 60000);
 }

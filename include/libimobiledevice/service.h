@@ -2,22 +2,22 @@
  * @file libimobiledevice/service.h
  * @brief Generic basic service implementation to inherit.
  * \internal
- * 
- * Copyright (c) 2013 Martin Szulecki All Rights Reserved.
+ *
+ * Copyright (c) 2013-2014 Martin Szulecki All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #ifndef ISERVICE_H
@@ -30,23 +30,20 @@ extern "C" {
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
 
-/** @name Error Codes */
-/*@{*/
-#define SERVICE_E_SUCCESS                0
-#define SERVICE_E_INVALID_ARG           -1
-#define SERVICE_E_MUX_ERROR             -3
-#define SERVICE_E_SSL_ERROR             -4
-#define SERVICE_E_START_SERVICE_ERROR   -5
-#define SERVICE_E_UNKNOWN_ERROR       -256
-/*@}*/
-
-/** Represents an error code. */
-typedef int16_t service_error_t;
+/** Error Codes */
+typedef enum {
+	SERVICE_E_SUCCESS             =  0,
+	SERVICE_E_INVALID_ARG         = -1,
+	SERVICE_E_MUX_ERROR           = -3,
+	SERVICE_E_SSL_ERROR           = -4,
+	SERVICE_E_START_SERVICE_ERROR = -5,
+	SERVICE_E_UNKNOWN_ERROR       = -256
+} service_error_t;
 
 typedef struct service_client_private service_client_private;
 typedef service_client_private* service_client_t; /**< The client handle. */
 
-#define SERVICE_CONSTRUCTOR(x) (int16_t (*)(idevice_t, lockdownd_service_descriptor_t, void**))(x)
+#define SERVICE_CONSTRUCTOR(x) (int32_t (*)(idevice_t, lockdownd_service_descriptor_t, void**))(x)
 
 /* Interface */
 
@@ -79,7 +76,7 @@ service_error_t service_client_new(idevice_t device, lockdownd_service_descripto
  * @return SERVICE_E_SUCCESS on success, or a SERVICE_E_* error code
  *     otherwise.
  */
-service_error_t service_client_factory_start_service(idevice_t device, const char* service_name, void **client, const char* label, int16_t (*constructor_func)(idevice_t, lockdownd_service_descriptor_t, void**), int16_t *error_code);
+service_error_t service_client_factory_start_service(idevice_t device, const char* service_name, void **client, const char* label, int32_t (*constructor_func)(idevice_t, lockdownd_service_descriptor_t, void**), int32_t *error_code);
 
 /**
  * Frees a service instance.

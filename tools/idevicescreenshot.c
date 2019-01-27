@@ -8,16 +8,20 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +39,7 @@ int main(int argc, char **argv)
 {
 	idevice_t device = NULL;
 	lockdownd_client_t lckd = NULL;
+	lockdownd_error_t ldret = LOCKDOWN_E_UNKNOWN_ERROR;
 	screenshotr_client_t shotr = NULL;
 	lockdownd_service_descriptor_t service = NULL;
 	int result = -1;
@@ -50,7 +55,7 @@ int main(int argc, char **argv)
 		}
 		else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--udid")) {
 			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
+			if (!argv[i] || !*argv[i]) {
 				print_usage(argc, argv);
 				return 0;
 			}
@@ -80,9 +85,9 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	if (LOCKDOWN_E_SUCCESS != lockdownd_client_new_with_handshake(device, &lckd, NULL)) {
+	if (LOCKDOWN_E_SUCCESS != (ldret = lockdownd_client_new_with_handshake(device, &lckd, NULL))) {
 		idevice_free(device);
-		printf("Exiting.\n");
+		printf("ERROR: Could not connect to lockdownd, error code %d\n", ldret);
 		return -1;
 	}
 
@@ -94,12 +99,22 @@ int main(int argc, char **argv)
 		} else {
 			char *imgdata = NULL;
 			uint64_t imgsize = 0;
-			if (!filename) {
-				time_t now = time(NULL);
-				filename = (char*)malloc(36);
-				strftime(filename, 36, "screenshot-%Y-%m-%d-%H-%M-%S.tiff", gmtime(&now));
-			}
 			if (screenshotr_take_screenshot(shotr, &imgdata, &imgsize) == SCREENSHOTR_E_SUCCESS) {
+				if (!filename) {
+					const char *fileext = NULL;
+					if (memcmp(imgdata, "\x89PNG", 4) == 0) {
+						fileext = ".png";
+					} else if (memcmp(imgdata, "MM\x00*", 4) == 0) {
+						fileext = ".tiff";
+					} else {
+						printf("WARNING: screenshot data has unexpected image format.\n");
+						fileext = ".dat";
+					}
+					time_t now = time(NULL);
+					filename = (char*)malloc(36);
+					size_t pos = strftime(filename, 36, "screenshot-%Y-%m-%d-%H-%M-%S", gmtime(&now));
+					sprintf(filename+pos, "%s", fileext);
+				}
 				FILE *f = fopen(filename, "wb");
 				if (f) {
 					if (fwrite(imgdata, 1, (size_t)imgsize, f) == (size_t)imgsize) {
@@ -143,7 +158,8 @@ void print_usage(int argc, char **argv)
 	printf("NOTE: A mounted developer disk image is required on the device, otherwise\n");
 	printf("the screenshotr service is not available.\n\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }

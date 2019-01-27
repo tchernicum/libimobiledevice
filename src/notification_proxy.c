@@ -8,15 +8,15 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <string.h>
@@ -45,18 +45,18 @@ struct np_thread {
  */
 static void np_lock(np_client_t client)
 {
-	debug_info("NP: Locked");
+	debug_info("Locked");
 	mutex_lock(&client->mutex);
 }
 
 /**
  * Unlocks a notification_proxy client, used for thread safety.
- * 
+ *
  * @param client notification_proxy client to unlock
  */
 static void np_unlock(np_client_t client)
 {
-	debug_info("NP: Unlocked");
+	debug_info("Unlocked");
 	mutex_unlock(&client->mutex);
 }
 
@@ -86,7 +86,7 @@ static np_error_t np_error(property_list_service_error_t err)
 	return NP_E_UNKNOWN_ERROR;
 }
 
-np_error_t np_client_new(idevice_t device, lockdownd_service_descriptor_t service, np_client_t *client)
+LIBIMOBILEDEVICE_API np_error_t np_client_new(idevice_t device, lockdownd_service_descriptor_t service, np_client_t *client)
 {
 	property_list_service_client_t plistclient = NULL;
 	np_error_t err = np_error(property_list_service_client_new(device, service, &plistclient));
@@ -104,31 +104,68 @@ np_error_t np_client_new(idevice_t device, lockdownd_service_descriptor_t servic
 	return NP_E_SUCCESS;
 }
 
-np_error_t np_client_start_service(idevice_t device, np_client_t* client, const char* label)
+LIBIMOBILEDEVICE_API np_error_t np_client_start_service(idevice_t device, np_client_t* client, const char* label)
 {
 	np_error_t err = NP_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, NP_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(np_client_new), &err);
 	return err;
 }
 
-np_error_t np_client_free(np_client_t client)
+LIBIMOBILEDEVICE_API np_error_t np_client_free(np_client_t client)
 {
+	plist_t dict;
+	property_list_service_client_t parent;
+
 	if (!client)
 		return NP_E_INVALID_ARG;
 
-	property_list_service_client_free(client->parent);
+	dict = plist_new_dict();
+	plist_dict_set_item(dict,"Command", plist_new_string("Shutdown"));
+	property_list_service_send_xml_plist(client->parent, dict);
+	plist_free(dict);
+
+	parent = client->parent;
+	/* notifies the client->notifier thread that it should terminate */
 	client->parent = NULL;
+
 	if (client->notifier) {
 		debug_info("joining np callback");
 		thread_join(client->notifier);
+		thread_free(client->notifier);
+		client->notifier = (thread_t)NULL;
+	} else {
+		dict = NULL;
+		property_list_service_receive_plist(parent, &dict);
+		if (dict) {
+#ifndef STRIP_DEBUG_CODE
+			char *cmd_value = NULL;
+			plist_t cmd_value_node = plist_dict_get_item(dict, "Command");
+			if (plist_get_node_type(cmd_value_node) == PLIST_STRING) {
+				plist_get_string_val(cmd_value_node, &cmd_value);
+			}
+			if (cmd_value && !strcmp(cmd_value, "ProxyDeath")) {
+				// this is the expected answer
+			} else {
+				debug_info("Did not get ProxyDeath but:");
+				debug_plist(dict);
+			}
+			if (cmd_value) {
+				free(cmd_value);
+			}
+#endif
+			plist_free(dict);
+		}
 	}
+
+	property_list_service_client_free(parent);
+
 	mutex_destroy(&client->mutex);
 	free(client);
 
 	return NP_E_SUCCESS;
 }
 
-np_error_t np_post_notification(np_client_t client, const char *notification)
+LIBIMOBILEDEVICE_API np_error_t np_post_notification(np_client_t client, const char *notification)
 {
 	if (!client || !notification) {
 		return NP_E_INVALID_ARG;
@@ -142,44 +179,14 @@ np_error_t np_post_notification(np_client_t client, const char *notification)
 	np_error_t res = np_error(property_list_service_send_xml_plist(client->parent, dict));
 	plist_free(dict);
 
-	dict = plist_new_dict();
-	plist_dict_set_item(dict,"Command", plist_new_string("Shutdown"));
-
-	res = np_error(property_list_service_send_xml_plist(client->parent, dict));
-	plist_free(dict);
-
 	if (res != NP_E_SUCCESS) {
 		debug_info("Error sending XML plist to device!");
 	}
-
-	// try to read an answer, we just ignore errors here
-	dict = NULL;
-	property_list_service_receive_plist(client->parent, &dict);
-	if (dict) {
-#ifndef STRIP_DEBUG_CODE
-		char *cmd_value = NULL;
-		plist_t cmd_value_node = plist_dict_get_item(dict, "Command");
-		if (plist_get_node_type(cmd_value_node) == PLIST_STRING) {
-			plist_get_string_val(cmd_value_node, &cmd_value);
-		}
-
-		if (cmd_value && !strcmp(cmd_value, "ProxyDeath")) {
-			// this is the expected answer
-		} else {
-			debug_plist(dict);
-		}
-		if (cmd_value) {
-			free(cmd_value);
-		}
-#endif
-		plist_free(dict);
-	}
-
 	np_unlock(client);
 	return res;
 }
 
-np_error_t np_observe_notification( np_client_t client, const char *notification )
+LIBIMOBILEDEVICE_API np_error_t np_observe_notification( np_client_t client, const char *notification )
 {
 	if (!client || !notification) {
 		return NP_E_INVALID_ARG;
@@ -200,7 +207,7 @@ np_error_t np_observe_notification( np_client_t client, const char *notification
 	return res;
 }
 
-np_error_t np_observe_notifications(np_client_t client, const char **notification_spec)
+LIBIMOBILEDEVICE_API np_error_t np_observe_notifications(np_client_t client, const char **notification_spec)
 {
 	int i = 0;
 	np_error_t res = NP_E_UNKNOWN_ERROR;
@@ -253,7 +260,7 @@ static int np_get_notification(np_client_t client, char **notification)
 		debug_info("NotificationProxy: no notification received!");
 		res = 0;
 	} else if (perr != PROPERTY_LIST_SERVICE_E_SUCCESS) {
-		debug_info("NotificationProxy: error %d occured!", perr);	
+		debug_info("NotificationProxy: error %d occured!", perr);
 		res = perr;
 	}
 	if (dict) {
@@ -279,7 +286,7 @@ static int np_get_notification(np_client_t client, char **notification)
 				res = 0;
 			}
 		} else if (cmd_value && !strcmp(cmd_value, "ProxyDeath")) {
-			debug_info("ERROR: NotificationProxy died!");
+			debug_info("NotificationProxy died!");
 			res = -1;
 		} else if (cmd_value) {
 			debug_info("unknown NotificationProxy command '%s' received!", cmd_value);
@@ -329,7 +336,7 @@ void* np_notifier( void* arg )
 	return NULL;
 }
 
-np_error_t np_set_notify_callback( np_client_t client, np_notify_cb_t notify_cb, void *user_data )
+LIBIMOBILEDEVICE_API np_error_t np_set_notify_callback( np_client_t client, np_notify_cb_t notify_cb, void *user_data )
 {
 	if (!client)
 		return NP_E_INVALID_ARG;
@@ -342,6 +349,7 @@ np_error_t np_set_notify_callback( np_client_t client, np_notify_cb_t notify_cb,
 		property_list_service_client_t parent = client->parent;
 		client->parent = NULL;
 		thread_join(client->notifier);
+		thread_free(client->notifier);
 		client->notifier = (thread_t)NULL;
 		client->parent = parent;
 	}
@@ -353,7 +361,7 @@ np_error_t np_set_notify_callback( np_client_t client, np_notify_cb_t notify_cb,
 			npt->cbfunc = notify_cb;
 			npt->user_data = user_data;
 
-			if (thread_create(&client->notifier, np_notifier, npt) == 0) {
+			if (thread_new(&client->notifier, np_notifier, npt) == 0) {
 				res = NP_E_SUCCESS;
 			}
 		}

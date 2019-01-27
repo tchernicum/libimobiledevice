@@ -1,22 +1,22 @@
 /*
- * webinspector.c 
+ * webinspector.c
  * com.apple.webinspector service implementation.
- * 
+ *
  * Copyright (c) 2013 Yury Melnichek All Rights Reserved.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -58,7 +58,7 @@ static webinspector_error_t webinspector_error(property_list_service_error_t err
 	return WEBINSPECTOR_E_UNKNOWN_ERROR;
 }
 
-webinspector_error_t webinspector_client_new(idevice_t device, lockdownd_service_descriptor_t service, webinspector_client_t * client)
+LIBIMOBILEDEVICE_API webinspector_error_t webinspector_client_new(idevice_t device, lockdownd_service_descriptor_t service, webinspector_client_t * client)
 {
 	*client = NULL;
 
@@ -85,14 +85,14 @@ webinspector_error_t webinspector_client_new(idevice_t device, lockdownd_service
 	return 0;
 }
 
-webinspector_error_t webinspector_client_start_service(idevice_t device, webinspector_client_t * client, const char* label)
+LIBIMOBILEDEVICE_API webinspector_error_t webinspector_client_start_service(idevice_t device, webinspector_client_t * client, const char* label)
 {
 	webinspector_error_t err = WEBINSPECTOR_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, WEBINSPECTOR_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(webinspector_client_new), &err);
 	return err;
 }
 
-webinspector_error_t webinspector_client_free(webinspector_client_t client)
+LIBIMOBILEDEVICE_API webinspector_error_t webinspector_client_free(webinspector_client_t client)
 {
 	if (!client)
 		return WEBINSPECTOR_E_INVALID_ARG;
@@ -103,7 +103,7 @@ webinspector_error_t webinspector_client_free(webinspector_client_t client)
 	return err;
 }
 
-webinspector_error_t webinspector_send(webinspector_client_t client, plist_t plist)
+LIBIMOBILEDEVICE_API webinspector_error_t webinspector_send(webinspector_client_t client, plist_t plist)
 {
 	webinspector_error_t res = WEBINSPECTOR_E_UNKNOWN_ERROR;
 
@@ -123,7 +123,7 @@ webinspector_error_t webinspector_send(webinspector_client_t client, plist_t pli
 		return res;
 	}
 
-	do {	
+	do {
 		/* determine if we need to send partial messages */
 		if (packet_length < WEBINSPECTOR_PARTIAL_PACKET_CHUNK_SIZE) {
 			is_final_message = 1;
@@ -160,12 +160,12 @@ webinspector_error_t webinspector_send(webinspector_client_t client, plist_t pli
 	return res;
 }
 
-webinspector_error_t webinspector_receive(webinspector_client_t client, plist_t * plist)
+LIBIMOBILEDEVICE_API webinspector_error_t webinspector_receive(webinspector_client_t client, plist_t * plist)
 {
 	return webinspector_receive_with_timeout(client, plist, 5000);
 }
 
-webinspector_error_t webinspector_receive_with_timeout(webinspector_client_t client, plist_t * plist, uint32_t timeout_ms)
+LIBIMOBILEDEVICE_API webinspector_error_t webinspector_receive_with_timeout(webinspector_client_t client, plist_t * plist, uint32_t timeout_ms)
 {
 	webinspector_error_t res = WEBINSPECTOR_E_UNKNOWN_ERROR;
 	plist_t message = NULL;

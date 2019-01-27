@@ -8,15 +8,15 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <string.h>
@@ -33,20 +33,20 @@
  *
  * @param client sbservices client to lock.
  */
-static void sbs_lock(sbservices_client_t client)
+static void sbservices_lock(sbservices_client_t client)
 {
-	debug_info("SBServices: Locked");
+	debug_info("Locked");
 	mutex_lock(&client->mutex);
 }
 
 /**
  * Unlocks an sbservices client, used for thread safety.
- * 
+ *
  * @param client sbservices client to unlock
  */
-static void sbs_unlock(sbservices_client_t client)
+static void sbservices_unlock(sbservices_client_t client)
 {
-	debug_info("SBServices: Unlocked");
+	debug_info("Unlocked");
 	mutex_unlock(&client->mutex);
 }
 
@@ -76,7 +76,7 @@ static sbservices_error_t sbservices_error(property_list_service_error_t err)
 	return SBSERVICES_E_UNKNOWN_ERROR;
 }
 
-sbservices_error_t sbservices_client_new(idevice_t device, lockdownd_service_descriptor_t service, sbservices_client_t *client)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_client_new(idevice_t device, lockdownd_service_descriptor_t service, sbservices_client_t *client)
 {
 	property_list_service_client_t plistclient = NULL;
 	sbservices_error_t err = sbservices_error(property_list_service_client_new(device, service, &plistclient));
@@ -92,14 +92,14 @@ sbservices_error_t sbservices_client_new(idevice_t device, lockdownd_service_des
 	return SBSERVICES_E_SUCCESS;
 }
 
-sbservices_error_t sbservices_client_start_service(idevice_t device, sbservices_client_t * client, const char* label)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_client_start_service(idevice_t device, sbservices_client_t * client, const char* label)
 {
 	sbservices_error_t err = SBSERVICES_E_UNKNOWN_ERROR;
 	service_client_factory_start_service(device, SBSERVICES_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(sbservices_client_new), &err);
 	return err;
 }
 
-sbservices_error_t sbservices_client_free(sbservices_client_t client)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_client_free(sbservices_client_t client)
 {
 	if (!client)
 		return SBSERVICES_E_INVALID_ARG;
@@ -112,7 +112,7 @@ sbservices_error_t sbservices_client_free(sbservices_client_t client)
 	return err;
 }
 
-sbservices_error_t sbservices_get_icon_state(sbservices_client_t client, plist_t *state, const char *format_version)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_get_icon_state(sbservices_client_t client, plist_t *state, const char *format_version)
 {
 	if (!client || !client->parent || !state)
 		return SBSERVICES_E_INVALID_ARG;
@@ -125,7 +125,7 @@ sbservices_error_t sbservices_get_icon_state(sbservices_client_t client, plist_t
 		plist_dict_set_item(dict, "formatVersion", plist_new_string(format_version));
 	}
 
-	sbs_lock(client);
+	sbservices_lock(client);
 
 	res = sbservices_error(property_list_service_send_binary_plist(client->parent, dict));
 	if (res != SBSERVICES_E_SUCCESS) {
@@ -148,11 +148,11 @@ leave_unlock:
 	if (dict) {
 		plist_free(dict);
 	}
-	sbs_unlock(client);
+	sbservices_unlock(client);
 	return res;
 }
 
-sbservices_error_t sbservices_set_icon_state(sbservices_client_t client, plist_t newstate)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_set_icon_state(sbservices_client_t client, plist_t newstate)
 {
 	if (!client || !client->parent || !newstate)
 		return SBSERVICES_E_INVALID_ARG;
@@ -163,7 +163,7 @@ sbservices_error_t sbservices_set_icon_state(sbservices_client_t client, plist_t
 	plist_dict_set_item(dict, "command", plist_new_string("setIconState"));
 	plist_dict_set_item(dict, "iconState", plist_copy(newstate));
 
-	sbs_lock(client);
+	sbservices_lock(client);
 
 	res = sbservices_error(property_list_service_send_binary_plist(client->parent, dict));
 	if (res != SBSERVICES_E_SUCCESS) {
@@ -174,11 +174,11 @@ sbservices_error_t sbservices_set_icon_state(sbservices_client_t client, plist_t
 	if (dict) {
 		plist_free(dict);
 	}
-	sbs_unlock(client);
+	sbservices_unlock(client);
 	return res;
 }
 
-sbservices_error_t sbservices_get_icon_pngdata(sbservices_client_t client, const char *bundleId, char **pngdata, uint64_t *pngsize)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_get_icon_pngdata(sbservices_client_t client, const char *bundleId, char **pngdata, uint64_t *pngsize)
 {
 	if (!client || !client->parent || !bundleId || !pngdata)
 		return SBSERVICES_E_INVALID_ARG;
@@ -189,7 +189,7 @@ sbservices_error_t sbservices_get_icon_pngdata(sbservices_client_t client, const
 	plist_dict_set_item(dict, "command", plist_new_string("getIconPNGData"));
 	plist_dict_set_item(dict, "bundleId", plist_new_string(bundleId));
 
-	sbs_lock(client);
+	sbservices_lock(client);
 
 	res = sbservices_error(property_list_service_send_binary_plist(client->parent, dict));
 	if (res != SBSERVICES_E_SUCCESS) {
@@ -211,11 +211,11 @@ leave_unlock:
 	if (dict) {
 		plist_free(dict);
 	}
-	sbs_unlock(client);
+	sbservices_unlock(client);
 	return res;
 }
 
-sbservices_error_t sbservices_get_interface_orientation(sbservices_client_t client, sbservices_interface_orientation_t* interface_orientation)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_get_interface_orientation(sbservices_client_t client, sbservices_interface_orientation_t* interface_orientation)
 {
 	if (!client || !client->parent || !interface_orientation)
 		return SBSERVICES_E_INVALID_ARG;
@@ -225,7 +225,7 @@ sbservices_error_t sbservices_get_interface_orientation(sbservices_client_t clie
 	plist_t dict = plist_new_dict();
 	plist_dict_set_item(dict, "command", plist_new_string("getInterfaceOrientation"));
 
-	sbs_lock(client);
+	sbservices_lock(client);
 
 	res = sbservices_error(property_list_service_send_binary_plist(client->parent, dict));
 	if (res != SBSERVICES_E_SUCCESS) {
@@ -249,11 +249,11 @@ leave_unlock:
 	if (dict) {
 		plist_free(dict);
 	}
-	sbs_unlock(client);
+	sbservices_unlock(client);
 	return res;
 }
 
-sbservices_error_t sbservices_get_home_screen_wallpaper_pngdata(sbservices_client_t client, char **pngdata, uint64_t *pngsize)
+LIBIMOBILEDEVICE_API sbservices_error_t sbservices_get_home_screen_wallpaper_pngdata(sbservices_client_t client, char **pngdata, uint64_t *pngsize)
 {
 	if (!client || !client->parent || !pngdata)
 		return SBSERVICES_E_INVALID_ARG;
@@ -263,7 +263,7 @@ sbservices_error_t sbservices_get_home_screen_wallpaper_pngdata(sbservices_clien
 	plist_t dict = plist_new_dict();
 	plist_dict_set_item(dict, "command", plist_new_string("getHomeScreenWallpaperPNGData"));
 
-	sbs_lock(client);
+	sbservices_lock(client);
 
 	res = sbservices_error(property_list_service_send_binary_plist(client->parent, dict));
 	if (res != SBSERVICES_E_SUCCESS) {
@@ -285,6 +285,6 @@ leave_unlock:
 	if (dict) {
 		plist_free(dict);
 	}
-	sbs_unlock(client);
+	sbservices_unlock(client);
 	return res;
 }

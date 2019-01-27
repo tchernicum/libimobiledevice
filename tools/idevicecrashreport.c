@@ -9,16 +9,20 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA 
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +36,7 @@
 #include <plist/plist.h>
 
 #ifdef WIN32
+#include <windows.h>
 #define S_IFLNK S_IFREG
 #define S_IFSOCK S_IFREG
 #endif
@@ -43,7 +48,11 @@ static int keep_crash_reports = 0;
 static int file_exists(const char* path)
 {
 	struct stat tst;
+#ifdef WIN32
+	return (stat(path, &tst) == 0);
+#else
 	return (lstat(path, &tst) == 0);
+#endif
 }
 
 static int extract_raw_crash_report(const char* filename) {
@@ -135,7 +144,9 @@ static int afc_client_copy_and_remove_crash_reports(afc_client_t afc, const char
 		char* p = strrchr(list[k], '.');
 		if (p != NULL && !strncmp(p, ".synced", 7)) {
 			/* make sure to strip ".synced" extension as seen on iOS 5 */
-			strncpy(((char*)target_filename) + host_directory_length, list[k], strlen(list[k]) - 7);
+			int newlen = strlen(list[k]) - 7;
+			strncpy(((char*)target_filename) + host_directory_length, list[k], newlen);
+			target_filename[host_directory_length + newlen] = '\0';
 		} else {
 			strcpy(((char*)target_filename) + host_directory_length, list[k]);
 		}
@@ -191,7 +202,9 @@ static int afc_client_copy_and_remove_crash_reports(afc_client_t afc, const char
 				}
 
 				/* create a symlink pointing to latest log */
-				symlink(b, target_filename);
+				if (symlink(b, target_filename) < 0) {
+					fprintf(stderr, "Can't create symlink to %s\n", b);
+				}
 #endif
 
 				if (!keep_crash_reports)
@@ -288,9 +301,10 @@ static void print_usage(int argc, char **argv)
 	printf("  -e, --extract\t\textract raw crash report into separate '.crash' file\n");
 	printf("  -k, --keep\t\tcopy but do not remove crash reports from device\n");
 	printf("  -d, --debug\t\tenable communication debugging\n");
-	printf("  -u, --udid UDID\ttarget specific device by its 40-digit device UDID\n");
+	printf("  -u, --udid UDID\ttarget specific device by UDID\n");
 	printf("  -h, --help\t\tprints usage information\n");
 	printf("\n");
+	printf("Homepage: <" PACKAGE_URL ">\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -313,7 +327,7 @@ int main(int argc, char* argv[]) {
 		}
 		else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--udid")) {
 			i++;
-			if (!argv[i] || (strlen(argv[i]) != 40)) {
+			if (!argv[i] || !*argv[i]) {
 				print_usage(argc, argv);
 				return 0;
 			}
@@ -367,6 +381,7 @@ int main(int argc, char* argv[]) {
 
 	lockdownd_error = lockdownd_client_new_with_handshake(device, &lockdownd, "idevicecrashreport");
 	if (lockdownd_error != LOCKDOWN_E_SUCCESS) {
+		fprintf(stderr, "ERROR: Could not connect to lockdownd, error code %d\n", lockdownd_error);
 		idevice_free(device);
 		return -1;
 	}
@@ -391,8 +406,9 @@ int main(int argc, char* argv[]) {
 
 	/* read "ping" message which indicates the crash logs have been moved to a safe harbor */
 	char *ping = malloc(4);
+	memset(ping, '\0', 4);
 	int attempts = 0;
-	while ((strncmp(ping, "ping", 4) != 0) && (attempts > 10)) {
+	while ((strncmp(ping, "ping", 4) != 0) && (attempts < 10)) {
 		uint32_t bytes = 0;
 		device_error = idevice_connection_receive_timeout(connection, ping, 4, &bytes, 2000);
 		if ((bytes == 0) && (device_error == IDEVICE_E_SUCCESS)) {
